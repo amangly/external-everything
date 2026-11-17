@@ -6,9 +6,7 @@ The Windows x64 launcher uses GPUI. Each game gets its own module, with shared m
 
 ## PointBlank demo
 
-[![PointBlank external features demo](<assets/pointblank-demo.jpg>)](https://github.com/amangly/external-everything/blob/main/assets/pointblank-demo.mp4)
-
-Click the preview to play the video.
+https://github.com/user-attachments/assets/d1a2084c-57ee-4253-ba24-593f4d856331
 
 ## Run
 
