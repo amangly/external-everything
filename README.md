@@ -1,8 +1,8 @@
 # External Everything
 
-The goal is to build external cheats for all games. PointBlank is the first implemented game.
+The goal is to build external cheats for all games using hyper-reV's CPUID-based hypercalls. PointBlank is the first implemented game.
 
-One Windows x64 launcher, with a module for each game and shared memory transport, rendering, and menu code. The loader uses GPUI. The game runtime uses Palepale's Direct2D ESP renderer and Direct3D11/ImGui menu, with memory reads through hyper-reV.
+The Windows x64 launcher uses GPUI. Each game gets its own module, with shared memory transport, rendering, and menu code. The game runtime uses Palepale's Direct2D ESP renderer and Direct3D11/ImGui menu.
 
 ## Run
 
