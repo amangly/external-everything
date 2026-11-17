@@ -1,0 +1,4 @@
+[submodule "vendor/hyper-reV"]
+	path = vendor/hyper-reV
+	url = https://github.com/amangly/hyper-reV.git
+	branch = main

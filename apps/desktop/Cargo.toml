@@ -1,0 +1,15 @@
+[package]
+name = "external-everything"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "External Everything native desktop application"
+
+[dependencies]
+anyhow.workspace = true
+hyperrev-loader.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
