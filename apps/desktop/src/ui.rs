@@ -1002,6 +1002,7 @@ mod tests {
             name: "Future Game".into(),
             executable,
             sha256: None,
+            embedded: false,
         }
     }
 

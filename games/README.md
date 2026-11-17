@@ -2,16 +2,9 @@
 
 External Everything's goal is external cheats for all games using hyper-reV's CPUID-based hypercalls. Each game gets its own module and [catalog](<catalog.json>) entry. PointBlank is the first implemented game.
 
-The [build helper](<../tools/build.ps1>) packages the runtime and generates its executable path and SHA-256:
+The [build helper](<../tools/build.ps1>) embeds the generated catalog and runtime inside `external-everything.exe`. The generated catalog binds each packaged runtime to its SHA-256. The launcher checks that identity, the runtime contract, and attachment readiness before launch.
 
-```text
-games/
-  catalog.json
-  pointblank/
-    external-runtime.exe
-```
-
-The source catalog keeps the game ID and name. The published catalog adds the binary path and hash. The launcher checks that hash, the runtime contract, and hyper-reV readiness before opening PointBlank.
+The runtime runs from an owned temporary directory. Closing the game session stops the child and removes that directory. The distribution folder keeps one EXE. See [single-file packaging](<../docs/single-file.md>).
 
 The tool's binary hash and the accepted PointBlank game hash serve separate checks. Game profiles live in the [reader](<../crates/external-runtime/src/games/pointblank/README.md>).
 

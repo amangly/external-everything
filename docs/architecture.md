@@ -95,16 +95,10 @@ The [macro worker](<../crates/external-runtime/src/presentation/macros.rs>) owns
 
 The [submodule](<../.gitmodules>) pins the maintained [hyper-reV fork](<https://github.com/amangly/hyper-reV>). Shared boot/ABI changes belong there; app lifecycle and game logic belong here. Boot entries remain **hyper-reV** and **Safe Windows**, with recovery journal `%LOCALAPPDATA%\hyper-reV\boot-install.json`. The [vendor loader guide](<../vendor/hyper-reV/loader/README.md>) defines backend prerequisites and recovery.
 
-The [build helper](<../tools/build.ps1>) builds the Rust workspace, validates and packages prebuilt matching boot payloads, and writes a generated runtime-hash catalog. Build stages the bundle under `dist/`; `-Publish` also targets `%LOCALAPPDATA%\External Everything\bin`:
+The [build helper](<../tools/build.ps1>) builds the runtime first, validates the matching boot payloads, and generates a runtime-hash catalog. The desktop [build script](<../apps/desktop/build.rs>) embeds all four assets into one `external-everything.exe`. Build publishes that EXE under `dist/`; `-Publish` also targets `%LOCALAPPDATA%\External Everything\bin`.
 
-```text
-external-everything.exe
-uefi-boot-standalone.efi
-hyperv-attachment.dll
-games/catalog.json
-games/pointblank/external-runtime.exe
-```
+[Bundle ownership](<../apps/desktop/src/bundle.rs>) verifies embedded hashes and PE roles, then creates operation-owned temporary staging. The game session drops its child before dropping the staged files. Boot setup retains its two source payloads in a [private recovery cache](<../apps/desktop/src/recovery.rs>) because an interrupted EFI copy may need the original source bytes during Restore. Successful Restore cleans only journal-matching cache files. Settings and the vendor journal remain persistent; the distribution folder needs one EXE. See [single-file packaging](<single-file.md>).
 
-The two boot payloads remain executable-relative; native compilation is a separate vendor build. The generated runtime hash identifies the external tool, while the ledger hash identifies the accepted game image. The [vendor sync helper](<../tools/sync-vendor.ps1>) explicitly selects a candidate revision for review. Generated artifacts stay outside Git.
+Native boot compilation remains a separate vendor build. The embedded runtime hash identifies the external tool, while the ledger hash identifies the accepted game image. The [vendor sync helper](<../tools/sync-vendor.ps1>) explicitly selects a candidate revision for review. Generated artifacts stay outside Git.
 
 See [reference provenance](<reference-flow.md>), [runtime details](<../crates/external-runtime/README.md>), and [catalog deployment](<../games/README.md>). The copied renderer now has its own successful native smoke, started/ready/child-cleanup checks, and repeat 65-KiB transport/current-PID checks. The recorded checkpoint passed 164 tests (four separately ignored), Clippy with warnings denied, and Release publication. The final DPI-aware [report](<../build/renderer-verification-8a1e725916ec4e2baa9afa064de8c08c.json>) passed 478 overlay/menu frames with both ready flags, but zero entities/ESP in its waiting state; that is separate from the earlier live 14-entity/139-ESP run. Final native integration/cleanup and loader-caption checks also passed. The subsequent low-latency source passed 177 tests (four separately ignored), Clippy, and Release publication; its new reader/render rates and freshness measurements are recorded above, separately from these older collection/render checkpoints. See [current artifact identities](<../crates/external-runtime/README.md#verified-profiles-and-remaining-limits>); exact box alignment and unresolved game semantics remain distinct.

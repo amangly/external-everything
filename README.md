@@ -6,6 +6,8 @@ The Windows x64 launcher uses GPUI. Each game gets its own module, with shared m
 
 ## Run
 
+Copy the single `external-everything.exe` to the target. It contains the boot payloads and game runtime; temporary runtime files are removed on exit. Settings and boot recovery data stay in AppData.
+
 1. Open the launcher and choose **Setup** if needed.
 2. Restart Windows through **hyper-reV**, then reopen the launcher.
 3. Choose **PointBlank**. Start the game or join a match if the runtime is waiting.
@@ -30,7 +32,7 @@ Build the matching EFI image and attachment first using the [hyper-reV build gui
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Publish
 ```
 
-The helper reads payloads from `vendor/hyper-reV/build/Release`; use `-PayloadDirectory` for another build. It writes the bundle to `dist/` and publishes it to `%LOCALAPPDATA%\External Everything\bin`. Keep the bundle together.
+The helper reads payloads from `vendor/hyper-reV/build/Release`; use `-PayloadDirectory` for another build. It writes one EXE to `dist/` and publishes it to `%LOCALAPPDATA%\External Everything\bin`. See [single-file packaging](<docs/single-file.md>) for staging and cleanup.
 
 ## Checks
 
@@ -39,9 +41,10 @@ cargo fmt --all --check
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Action Test
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Action Clippy
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test-pointblank.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test-single-file.ps1
 ```
 
-The last command checks the installed runtime, hypercalls, rendering, and launcher handoff on an interactive Windows desktop.
+The native checks cover hypercalls, rendering, launcher handoff, and cleanup from a folder containing only the EXE.
 
 ## Code
 

@@ -1,4 +1,5 @@
 use crate::{
+    bundle,
     catalog::{self, Game},
     probe,
 };
@@ -39,13 +40,21 @@ pub fn inspect() -> Result<Snapshot> {
 }
 
 pub fn setup() -> Result<Snapshot> {
-    app::perform(app::Operation::Setup, app::default_input())?;
+    let staged = bundle::stage_boot()?;
+    let mut input = app::default_input();
+    if let Some(stage) = &staged {
+        input.source = crate::recovery::retain(stage.root())?;
+    }
+    app::perform(app::Operation::Setup, input)?;
     // A successful EFI installation is distinct from attachment readiness.
     inspect()
 }
 
 pub fn restore() -> Result<Snapshot> {
-    app::perform(app::Operation::Restore, app::default_input())?;
+    let input = app::default_input();
+    let journal = files::load(&input.journal)?;
+    app::perform(app::Operation::Restore, input)?;
+    crate::recovery::cleanup(&journal)?;
     inspect()
 }
 
@@ -60,6 +69,8 @@ fn require_attachment(readiness: &Readiness) -> Result<()> {
 pub struct RuntimeSession {
     pub game_id: String,
     runtime: external_runtime::launch::OwnedRuntime,
+    // Declaration order drops the child before deleting its staged executable.
+    _staged: Option<bundle::Staged>,
 }
 
 impl RuntimeSession {
@@ -68,6 +79,9 @@ impl RuntimeSession {
     }
     pub fn pid(&self) -> u32 {
         self.runtime.pid()
+    }
+    pub fn staging_root(&self) -> Option<&std::path::Path> {
+        self._staged.as_ref().map(bundle::Staged::root)
     }
 }
 
@@ -78,7 +92,26 @@ pub fn launch(game_id: &str) -> Result<RuntimeSession> {
         .iter()
         .find(|game| game.id == game_id)
         .context("Game is absent from the installed catalog")?;
-    let executable = catalog::verify_runtime(game)?;
+    let staged = if game.embedded {
+        bundle::stage_game(game_id)?
+    } else {
+        None
+    };
+    let executable = if let Some(stage) = &staged {
+        let staged_games = catalog::load_from(&stage.root().join("games"))?;
+        let staged_game = staged_games
+            .iter()
+            .find(|candidate| candidate.id == game.id)
+            .context("Staged game is absent from its embedded catalog")?;
+        ensure!(
+            staged_game.sha256 == game.sha256,
+            "Staged game identity differs from embedded metadata"
+        );
+        catalog::verify_runtime(staged_game)?
+    } else {
+        ensure!(!game.embedded, "Embedded game staging is unavailable");
+        catalog::verify_runtime(game)?
+    };
     // A cached UI status never grants launch. The runtime then validates its
     // contract and acknowledges both process startup and its actual control window.
     require_attachment(&probe::check()?)?;
@@ -87,6 +120,7 @@ pub fn launch(game_id: &str) -> Result<RuntimeSession> {
     Ok(RuntimeSession {
         game_id: game.id.clone(),
         runtime,
+        _staged: staged,
     })
 }
 

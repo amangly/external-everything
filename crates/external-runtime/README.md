@@ -20,14 +20,14 @@ Settings live under `%LOCALAPPDATA%\External Everything\pointblank`. The runtime
 
 ## Launch
 
-The launcher verifies the runtime hash and contract, starts the child, and waits for both renderers to paint. It keeps the chooser open and stops the child when the launcher closes.
+The single launcher EXE embeds this runtime. It verifies the hash, stages the child in a temporary directory, and waits for both renderers to paint. The chooser stays open; ending the session removes the temporary runtime.
 
 ```powershell
-.\external-runtime.exe --game pointblank
-.\external-runtime.exe --self-test
-.\external-runtime.exe --snapshot
-.\external-runtime.exe --verify-features
-.\external-runtime.exe --render-smoke 5
+.\external-everything.exe --inspect-bundle
+.\external-everything.exe --runtime --self-test
+.\external-everything.exe --runtime --snapshot
+.\external-everything.exe --runtime --verify-features
+.\external-everything.exe --runtime --render-smoke 5
 ```
 
 The self-test uses its own buffers. `--verify-features` applies and restores the two verified game patches. The render smoke runs for at most ten seconds and prints frame counts.

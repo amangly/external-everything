@@ -1,5 +1,5 @@
 param(
-    [string]$Runtime = (Join-Path $env:LOCALAPPDATA 'External Everything\bin\games\pointblank\external-runtime.exe'),
+    [string]$Runtime = (Join-Path $env:LOCALAPPDATA 'External Everything\bin\external-everything.exe'),
     [switch]$CloseMenu
 )
 $ErrorActionPreference = 'Stop'
@@ -29,7 +29,8 @@ $started = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::
 $ready = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, ($eventPrefix + '-ready'), [ref]$created)
 $start = New-Object Diagnostics.ProcessStartInfo
 $start.FileName = $exe
-$start.Arguments = '--render-smoke 8'
+$bundled=[IO.Path]::GetFileName($exe) -eq 'external-everything.exe'
+$start.Arguments = if($bundled){'--runtime --render-smoke 8'}else{'--render-smoke 8'}
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.RedirectStandardOutput = $true
@@ -46,7 +47,15 @@ try {
     $stderr = $process.StandardError.ReadToEndAsync()
     if (-not $started.WaitOne(8000)) { throw 'Renderer started event timed out.' }
     if (-not $ready.WaitOne(20000)) { throw 'Renderer ready event timed out.' }
-    $menu = [ExternalRendererProbe]::Menu([uint32]$process.Id)
+    $rendererPid=$process.Id
+    $stagingRoot=$null
+    if($bundled){
+        $renderer=@(Get-CimInstance Win32_Process|Where-Object{$_.ParentProcessId -eq $process.Id -and $_.Name -eq 'external-runtime.exe'})
+        if($renderer.Count -ne 1){throw 'Single-file runtime child is absent or duplicated'}
+        $rendererPid=$renderer[0].ProcessId
+        $stagingRoot=Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $renderer[0].ExecutablePath))
+    }
+    $menu = [ExternalRendererProbe]::Menu([uint32]$rendererPid)
     if ($menu -eq [IntPtr]::Zero) { throw 'Owned ImGui menu surface is absent.' }
     # Renderer readiness can precede the first asynchronous process snapshot.
     # Wait for placement to settle before selecting the screen capture region.
@@ -81,6 +90,7 @@ try {
         if (-not [ExternalRendererProbe]::PostMessageW($menu,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'Native menu close request failed.' }
     }
     if (-not $process.WaitForExit(20000)) { throw 'Bounded renderer smoke failed to finish.' }
+    if($stagingRoot -and (Test-Path -LiteralPath $stagingRoot)){throw 'Renderer diagnostic left its staged runtime behind'}
     $output = $stdout.Result
     $errorText = $stderr.Result
     if ($process.ExitCode -ne 0) { throw "Renderer smoke failed: $errorText" }

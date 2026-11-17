@@ -1,13 +1,13 @@
 param([string]$Launcher=(Join-Path $env:LOCALAPPDATA 'External Everything\bin\external-everything.exe'))
 $ErrorActionPreference='Stop'
 $launcherPath=(Resolve-Path -LiteralPath $Launcher).Path
-$runtime=Join-Path (Split-Path -Parent $launcherPath) 'games\pointblank\external-runtime.exe'
+$runtime=$launcherPath
 $root=Split-Path -Parent $PSScriptRoot
 $directory=Join-Path $root ('build\feature-verification-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $directory|Out-Null
 function Invoke-Json([string]$Arguments){
  $s=New-Object Diagnostics.ProcessStartInfo
- $s.FileName=$runtime;$s.Arguments=$Arguments;$s.UseShellExecute=$false;$s.CreateNoWindow=$true;$s.RedirectStandardOutput=$true;$s.RedirectStandardError=$true
+ $s.FileName=$runtime;$s.Arguments='--runtime '+$Arguments;$s.UseShellExecute=$false;$s.CreateNoWindow=$true;$s.RedirectStandardOutput=$true;$s.RedirectStandardError=$true
  $p=New-Object Diagnostics.Process;$p.StartInfo=$s
  try {
   if(-not $p.Start()){throw 'Feature verification child start failed'}
@@ -68,7 +68,7 @@ public static class FeatureMenuProbe{
 $eventName='Local\ExternalEverything-runtime-feature-ready-'+[guid]::NewGuid().ToString('N')
 $created=$false;$ready=[Threading.EventWaitHandle]::new($false,[Threading.EventResetMode]::ManualReset,$eventName,[ref]$created)
 $s=New-Object Diagnostics.ProcessStartInfo
-$s.FileName=$runtime;$s.Arguments='--render-smoke 8';$s.UseShellExecute=$false;$s.CreateNoWindow=$true;$s.RedirectStandardOutput=$true;$s.RedirectStandardError=$true
+$s.FileName=$runtime;$s.Arguments='--runtime --render-smoke 8';$s.UseShellExecute=$false;$s.CreateNoWindow=$true;$s.RedirectStandardOutput=$true;$s.RedirectStandardError=$true
 $s.EnvironmentVariables['LOCALAPPDATA']=Join-Path $directory 'local'
 $s.EnvironmentVariables['EXTERNAL_EVERYTHING_READY_EVENT']=$eventName
 $child=New-Object Diagnostics.Process;$child.StartInfo=$s
@@ -80,15 +80,21 @@ try {
   throw ('Feature-enabled renderer missed its ready deadline: '+$reason)
  }
  $during=Read-Guards 'while-rendering' $true
- $menu=[FeatureMenuProbe]::Find([uint32]$child.Id)
+ $renderers=@(Get-CimInstance Win32_Process|Where-Object{$_.ParentProcessId -eq $child.Id -and $_.Name -eq 'external-runtime.exe'})
+ if($renderers.Count -ne 1){throw 'Feature renderer child is absent or duplicated'}
+ $rendererPid=$renderers[0].ProcessId
+ $runtimeHash=(Get-FileHash -LiteralPath $renderers[0].ExecutablePath -Algorithm SHA256).Hash.ToLowerInvariant()
+ $stagingRoot=Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $renderers[0].ExecutablePath))
+ $menu=[FeatureMenuProbe]::Find([uint32]$rendererPid)
  if($menu -eq [IntPtr]::Zero){throw 'Feature-enabled menu window is absent'}
  if(-not [FeatureMenuProbe]::PostMessageW($menu,0x10,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Feature-enabled menu close failed'}
  if(-not $child.WaitForExit(10000)){throw 'Feature-enabled renderer failed to shut down'}
  if($child.ExitCode -ne 0){throw $e.Result}
  $render=$o.Result|ConvertFrom-Json
  if(-not $render.d2d_ready -or -not $render.d3d11_ready){throw 'Feature-enabled native renderers are incomplete'}
+ if(Test-Path -LiteralPath $stagingRoot){throw 'Feature renderer left a temporary runtime behind'}
  $afterClose=Read-Guards 'after-window-close' $false
- $proof=@{pid=$targetPid;roundtrip=$roundtrip;before=$before;after_roundtrip=$afterRoundtrip;while_rendering=$during;after_window_close=$afterClose;render=$render;macro_input_enabled=$false;original_bytes='restored';runtime_sha256=(Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant()}
+ $proof=@{pid=$targetPid;roundtrip=$roundtrip;before=$before;after_roundtrip=$afterRoundtrip;while_rendering=$during;after_window_close=$afterClose;render=$render;macro_input_enabled=$false;original_bytes='restored';runtime_sha256=$runtimeHash;launcher_sha256=(Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash.ToLowerInvariant()}
  $output=Join-Path $directory 'evidence.json'
  [IO.File]::WriteAllText($output,($proof|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
  Write-Output "EVIDENCE=$output"
@@ -96,7 +102,8 @@ try {
  Write-Output 'Verified independent and combined feature writes, full-function readbacks, and native-window-close restoration.'
 }finally{
  if($child.Id -and -not $child.HasExited){
-  $menu=[FeatureMenuProbe]::Find([uint32]$child.Id)
+  $renderers=@(Get-CimInstance Win32_Process|Where-Object{$_.ParentProcessId -eq $child.Id -and $_.Name -eq 'external-runtime.exe'})
+  $menu=if($renderers.Count -eq 1){[FeatureMenuProbe]::Find([uint32]$renderers[0].ProcessId)}else{[IntPtr]::Zero}
   if($menu -ne [IntPtr]::Zero){[FeatureMenuProbe]::PostMessageW($menu,0x10,[IntPtr]::Zero,[IntPtr]::Zero)|Out-Null}
   if(-not $child.WaitForExit(5000)){$child.Kill();$child.WaitForExit()}
  }

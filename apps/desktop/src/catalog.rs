@@ -16,11 +16,12 @@ pub struct Game {
     pub name: String,
     pub executable: Option<PathBuf>,
     pub sha256: Option<String>,
+    pub embedded: bool,
 }
 
 impl Game {
     pub fn available(&self) -> bool {
-        self.executable.is_some() && self.sha256.is_some()
+        (self.embedded || self.executable.is_some()) && self.sha256.is_some()
     }
 }
 
@@ -48,7 +49,18 @@ pub fn root() -> Result<PathBuf> {
 }
 
 pub fn load() -> Result<Vec<Game>> {
+    if let Some(bytes) = crate::bundle::catalog_bytes() {
+        return parse_embedded(bytes);
+    }
     load_from(&root()?)
+}
+
+fn parse_embedded(bytes: &[u8]) -> Result<Vec<Game>> {
+    let mut games = parse(Path::new("embedded"), bytes)?;
+    for game in &mut games {
+        game.embedded = game.executable.take().is_some();
+    }
+    Ok(games)
 }
 
 pub fn load_from(directory: &Path) -> Result<Vec<Game>> {
@@ -115,7 +127,8 @@ fn parse(directory: &Path, bytes: &[u8]) -> Result<Vec<Game>> {
                 "External runtime must be an executable"
             );
             let destination = directory.join(relative);
-            hyperrev_loader::files::reject_links(&destination)?;
+            // The path is lexical metadata here. Filesystem link and identity
+            // checks run on the actual staged/external executable before launch.
             Some(destination)
         } else {
             None
@@ -134,12 +147,17 @@ fn parse(directory: &Path, bytes: &[u8]) -> Result<Vec<Game>> {
             name: entry.name,
             executable,
             sha256: entry.sha256,
+            embedded: false,
         });
     }
     Ok(games)
 }
 
 pub fn verify_runtime(game: &Game) -> Result<PathBuf> {
+    ensure!(
+        !game.embedded,
+        "Embedded runtime requires owned staging before launch"
+    );
     let path = game
         .executable
         .as_ref()
@@ -201,6 +219,18 @@ mod tests {
                 .is_empty()
         );
     }
+    #[test]
+    fn embedded_catalog_advertises_runtime_without_a_sibling_path() {
+        let json = serde_json::json!({"schema":1,"games":[{"id":"pointblank","name":"PointBlank","executable":"pointblank/external-runtime.exe","sha256":"a".repeat(64)}]});
+        let games = parse_embedded(&serde_json::to_vec(&json).unwrap()).unwrap();
+        assert!(games[0].available() && games[0].embedded);
+        assert!(games[0].executable.is_none());
+        assert!(verify_runtime(&games[0]).is_err());
+        let pending =
+            parse_embedded(br#"{"schema":1,"games":[{"id":"future","name":"Future"}]}"#).unwrap();
+        assert!(!pending[0].available() && !pending[0].embedded);
+    }
+
     #[test]
     fn future_games_have_a_name_without_a_fake_runtime() {
         let games = parse(

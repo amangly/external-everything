@@ -99,6 +99,38 @@ fn request_close(pid: u32) {
     let _ = unsafe { EnumWindows(Some(close_owned), LPARAM(pid as isize)) };
 }
 
+/// Run a bounded explicit diagnostic using the same child ownership as launch.
+pub fn run_diagnostic(executable: &Path, args: &[String]) -> Result<()> {
+    let mut command = Command::new(executable);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    let mut runtime = OwnedRuntime {
+        child: command
+            .spawn()
+            .context("Start embedded runtime diagnostic")?,
+    };
+    let deadline = Instant::now() + Duration::from_secs(35);
+    loop {
+        if let Some(status) = runtime.try_wait()? {
+            ensure!(status.success(), "Runtime diagnostic exited with {status}");
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "Runtime diagnostic exceeded its deadline"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 pub fn start(executable: &Path, game: &str) -> Result<OwnedRuntime> {
     inspect_contract(executable, game)?;
     #[cfg(windows)]
