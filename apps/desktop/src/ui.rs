@@ -23,7 +23,8 @@ enum RouteChoice {
 // Only the live attachment probe opens the chooser. Installation metadata is
 // useful for the restart screen, never as a substitute for attachment readiness.
 fn route_choice(snapshot: &Snapshot) -> RouteChoice {
-    if matches!(&snapshot.attachment, Readiness::Ready { cr3 } if *cr3 != 0) {
+    if matches!(&snapshot.attachment, Readiness::Ready { cr3 } if cr3 & 0x000f_ffff_ffff_f000 != 0)
+    {
         RouteChoice::Games
     } else if snapshot.installed {
         RouteChoice::RestartRequired
@@ -309,7 +310,10 @@ impl MainView {
                         }
                     }
                     Err(error) => {
+                        view.snapshot = None;
                         view.stage = Stage::Error;
+                        view.role = WindowRole::Loader;
+                        window.set_window_title(APP_TITLE);
                         view.show_error(match notice {
                             Some(notice) => format!("{notice}\n\nRecheck: {error}"),
                             None => error,
@@ -543,7 +547,7 @@ impl MainView {
                 div()
                     .text_size(px(28.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("HyperRev"),
+                    .child(APP_TITLE),
             )
             .child(
                 div()
@@ -1045,6 +1049,18 @@ mod tests {
     fn zero_cr3_with_install_stays_on_restart() {
         assert_eq!(
             route_choice(&snapshot(Readiness::Ready { cr3: 0 }, true)),
+            RouteChoice::RestartRequired
+        );
+    }
+
+    #[test]
+    fn cr3_flags_without_a_frame_never_open_games() {
+        assert_eq!(
+            route_choice(&snapshot(Readiness::Ready { cr3: 0xfff }, false)),
+            RouteChoice::Setup
+        );
+        assert_eq!(
+            route_choice(&snapshot(Readiness::Ready { cr3: 0xfff }, true)),
             RouteChoice::RestartRequired
         );
     }
