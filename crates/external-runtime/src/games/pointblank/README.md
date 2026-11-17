@@ -1,6 +1,6 @@
 # PointBlank reader
 
-Reads camera, player, health, and world-position data from the x86 `PointBlank.exe` process through hyper-reV. The runtime uses it to draw boxes and health labels.
+The first game module in External Everything. It reads camera, player, health, and world-position data from the x86 `PointBlank.exe` process through hyper-reV. The runtime uses it to draw boxes and health labels.
 
 ## Builds
 

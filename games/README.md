@@ -1,6 +1,6 @@
-# PointBlank package
+# Game packages
 
-PointBlank is the only game registered in the [catalog](<catalog.json>).
+External Everything's goal is external cheats for all games. Each game gets its own module and [catalog](<catalog.json>) entry. PointBlank is the first implemented game.
 
 The [build helper](<../tools/build.ps1>) packages the runtime and generates its executable path and SHA-256:
 

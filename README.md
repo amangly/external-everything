@@ -1,8 +1,8 @@
 # External Everything
 
-Windows x64 launcher and external ESP. Currently supports PointBlank only.
+The goal is to build external cheats for all games. PointBlank is the first implemented game.
 
-The loader uses GPUI. The game runtime uses Palepale's Direct2D ESP renderer and Direct3D11/ImGui menu, with memory reads through hyper-reV.
+One Windows x64 launcher, with a module for each game and shared memory transport, rendering, and menu code. The loader uses GPUI. The game runtime uses Palepale's Direct2D ESP renderer and Direct3D11/ImGui menu, with memory reads through hyper-reV.
 
 ## Run
 

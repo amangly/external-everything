@@ -1,6 +1,6 @@
-# PointBlank runtime
+# External runtime
 
-The external game process for External Everything. PointBlank is the only supported game.
+Shared runtime for External Everything's external game cheats. PointBlank is the first implemented game; more games will use their own readers and features.
 
 It uses Palepale's copied Direct2D/DirectWrite ESP renderer, Direct3D11/ImGui menu, and shared menu controls. GPUI stays in the launcher. Source pin and adaptations are recorded in the [reference notes](<../../docs/reference-flow.md>).
 
