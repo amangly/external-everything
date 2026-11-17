@@ -4,14 +4,20 @@ The goal is to build external cheats for all games using hyper-reV's CPUID-based
 
 The Windows x64 launcher uses GPUI. Each game gets its own module, with shared memory transport, rendering, and menu code. The game runtime uses Direct2D for ESP and Direct3D11/ImGui for menus.
 
+## PointBlank demo
+
+[![PointBlank external features demo](<assets/pointblank-demo.jpg>)](https://github.com/amangly/external-everything/blob/main/assets/pointblank-demo.mp4)
+
+Click the preview to play the video.
+
 ## Run
 
 Copy the single `external-everything.exe` to the target. It contains the boot payloads and game runtime; temporary runtime files are removed on exit. Settings and boot recovery data stay in AppData.
 
 1. Open the launcher and choose **Setup** if needed.
 2. Restart Windows through **hyper-reV**, then reopen the launcher.
-3. Choose **PointBlank**. Start the game or join a match if the runtime is waiting.
-4. Press **INSERT** to toggle the menu or **END** to exit the runtime.
+3. Click **Play** beside **PointBlank**. The launcher hides once the overlay is ready.
+4. Press **INSERT** to toggle the menu or **END** to exit the overlay and return to the launcher.
 
 PointBlank has boxes, health labels, native name tags, dot/cross crosshairs, 3Q macros, and saved settings. Boxes use estimated body dimensions; team filtering and skeletons are unfinished. The reader checks the game build against its [profiles](<crates/external-runtime/src/games/pointblank/offsets.rs>).
 
