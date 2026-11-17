@@ -2,7 +2,7 @@
 
 Shared runtime for External Everything's external game cheats. Memory reads use hyper-reV's CPUID-based hypercalls. PointBlank is the first implemented game; more games will use their own readers and features.
 
-It uses Palepale's copied Direct2D/DirectWrite ESP renderer, Direct3D11/ImGui menu, and shared menu controls. GPUI stays in the launcher. Source pin and adaptations are recorded in the [reference notes](<../../docs/reference-flow.md>).
+ESP uses Direct2D/DirectWrite. Menus use Direct3D11/ImGui and shared controls. GPUI stays in the launcher.
 
 ## Controls
 
@@ -29,4 +29,4 @@ The launcher verifies the runtime hash and contract, starts the child, and waits
 
 The self-test reads, writes, and restores its own buffers. The render smoke runs for at most ten seconds and prints frame counts.
 
-[Engine](<src/engine.rs>) handles process discovery and frame reads. [PointBlank](<src/games/pointblank/README.md>) validates game objects and projects boxes. [Presentation](<src/presentation/mod.rs>) connects those frames to the copied [renderers](<src/common/mod.rs>).
+[Engine](<src/engine.rs>) handles process discovery and frame reads. [PointBlank](<src/games/pointblank/README.md>) validates game objects and projects boxes. [Presentation](<src/presentation/mod.rs>) connects those frames to the native [renderers](<src/common/mod.rs>).
