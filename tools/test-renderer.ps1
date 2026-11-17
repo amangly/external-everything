@@ -48,9 +48,18 @@ try {
     if (-not $ready.WaitOne(20000)) { throw 'Renderer ready event timed out.' }
     $menu = [ExternalRendererProbe]::Menu([uint32]$process.Id)
     if ($menu -eq [IntPtr]::Zero) { throw 'Owned ImGui menu surface is absent.' }
-    [ExternalRendererProbe]::DwmFlush() | Out-Null
+    # Renderer readiness can precede the first asynchronous process snapshot.
+    # Wait for placement to settle before selecting the screen capture region.
     $rect = New-Object ExternalRendererProbe+RECT
-    if (-not [ExternalRendererProbe]::GetWindowRect($menu,[ref]$rect)) { throw 'Read renderer surface bounds failed.' }
+    $lastBounds='';$stableSince=[datetime]::UtcNow;$placementDeadline=$stableSince.AddSeconds(2)
+    do {
+        [ExternalRendererProbe]::DwmFlush() | Out-Null
+        if (-not [ExternalRendererProbe]::GetWindowRect($menu,[ref]$rect)) { throw 'Read renderer surface bounds failed.' }
+        $bounds="$($rect.L),$($rect.T),$($rect.R),$($rect.B)"
+        if ($bounds -ne $lastBounds) { $lastBounds=$bounds;$stableSince=[datetime]::UtcNow }
+        if (([datetime]::UtcNow-$stableSince).TotalMilliseconds -ge 200) { break }
+        [Threading.Thread]::Sleep(16)
+    } while ([datetime]::UtcNow -lt $placementDeadline)
     # Chrome's copied default is position (100,64), width 780, max height 860.
     # Capture the menu region only, rather than the game's surrounding player UI.
     $left = $rect.L + 96

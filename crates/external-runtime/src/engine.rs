@@ -1,4 +1,7 @@
-use crate::games::pointblank::{self, Frame, Memory};
+use crate::games::pointblank::{
+    self, Frame, Memory,
+    patches::{Controller, Requested},
+};
 use anyhow::{Context, Result, ensure};
 use hyperrev_transport::{Connection, Process};
 use sha2::{Digest, Sha256};
@@ -114,6 +117,14 @@ impl ManagerCache {
     }
 }
 
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct FeatureState {
+    pub available: bool,
+    pub names: bool,
+    pub anti_kick: bool,
+    pub message: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub status: String,
@@ -122,6 +133,7 @@ pub struct Snapshot {
     pub base: Option<u64>,
     pub cr3: Option<u64>,
     pub frame: Option<Frame>,
+    pub features: FeatureState,
 }
 
 impl Snapshot {
@@ -133,6 +145,7 @@ impl Snapshot {
             base: None,
             cr3: None,
             frame: None,
+            features: FeatureState::default(),
         }
     }
 }
@@ -144,6 +157,15 @@ struct TargetMemory<'a> {
 impl Memory for TargetMemory<'_> {
     fn read(&self, address: u64, out: &mut [u8]) -> Result<()> {
         self.connection.read(self.cr3, address, out)
+    }
+}
+
+impl pointblank::patches::Memory for TargetMemory<'_> {
+    fn read(&self, address: u64, out: &mut [u8]) -> Result<()> {
+        self.connection.read(self.cr3, address, out)
+    }
+    fn write(&self, address: u64, bytes: &[u8]) -> Result<()> {
+        self.connection.write(self.cr3, address, bytes)
     }
 }
 
@@ -163,6 +185,10 @@ pub struct Engine {
     manager_probe: Cadence,
     region_refresh: Cadence,
     build_detail: String,
+    patches: Controller,
+    requested_features: Requested,
+    attempted_features: Option<Requested>,
+    feature_message: String,
 }
 
 impl Engine {
@@ -183,11 +209,122 @@ impl Engine {
             manager_probe: Cadence::new(MANAGER_PROBE_INTERVAL),
             region_refresh: Cadence::new(REGION_REFRESH_INTERVAL),
             build_detail: String::new(),
+            patches: Controller::default(),
+            requested_features: Requested::default(),
+            attempted_features: None,
+            feature_message: String::new(),
         }
     }
 
     pub fn memory_check(&self) -> Result<()> {
         self.connection.self_test()
+    }
+
+    pub fn set_features(&mut self, requested: Requested) {
+        if self.requested_features.names != requested.names
+            || self.requested_features.anti_kick != requested.anti_kick
+        {
+            self.requested_features = requested;
+            self.attempted_features = None;
+        }
+    }
+
+    pub fn restore_features(&mut self) -> Result<()> {
+        if !self.patches.owns_patches() {
+            return Ok(());
+        }
+        if let (Some(process), Some(lifetime)) = (&self.process, &self.lifetime) {
+            if lifetime.alive()? {
+                self.patches.restore(&TargetMemory {
+                    connection: &self.connection,
+                    cr3: process.cr3,
+                })?;
+            } else {
+                self.patches = Controller::default();
+            }
+        }
+        ensure!(
+            !self.patches.owns_patches(),
+            "Feature restoration lost its process lifetime"
+        );
+        self.attempted_features = None;
+        Ok(())
+    }
+
+    pub fn verify_feature_roundtrip(&mut self) -> Result<()> {
+        ensure!(
+            !self.patches.owns_patches(),
+            "Feature self-test requires original target instructions"
+        );
+        let process = self
+            .process
+            .as_ref()
+            .context("Feature self-test requires an attached PointBlank process")?;
+        let profile = self
+            .profile
+            .as_ref()
+            .context("Feature self-test requires a supported game build")?;
+        ensure!(
+            profile.sha256 == pointblank::CURRENT_PROFILE.sha256,
+            "Feature self-test requires the verified current profile"
+        );
+        let memory = TargetMemory {
+            connection: &self.connection,
+            cr3: process.cr3,
+        };
+        let result = (|| -> Result<()> {
+            for requested in [
+                Requested {
+                    names: true,
+                    anti_kick: false,
+                },
+                Requested {
+                    names: false,
+                    anti_kick: true,
+                },
+                Requested {
+                    names: true,
+                    anti_kick: true,
+                },
+            ] {
+                self.patches
+                    .sync(&memory, process.image_base as u32, profile, requested)?;
+                let active = self.patches.active();
+                ensure!(
+                    active.names == requested.names && active.anti_kick == requested.anti_kick,
+                    "Feature patch readback differs from requested state"
+                );
+                self.patches.sync(
+                    &memory,
+                    process.image_base as u32,
+                    profile,
+                    Requested::default(),
+                )?;
+                ensure!(
+                    !self.patches.owns_patches(),
+                    "Feature self-test restoration is incomplete"
+                );
+            }
+            Ok(())
+        })();
+        let restore = self.patches.restore(&memory);
+        self.attempted_features = None;
+        result?;
+        restore?;
+        Ok(())
+    }
+
+    fn feature_state(&self) -> FeatureState {
+        let active = self.patches.active();
+        FeatureState {
+            available: self
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.sha256 == pointblank::CURRENT_PROFILE.sha256),
+            names: active.names,
+            anti_kick: active.anti_kick,
+            message: self.feature_message.clone(),
+        }
     }
 
     pub fn poll(&mut self) -> Snapshot {
@@ -202,17 +339,30 @@ impl Engine {
                     base: process.map(|p| p.image_base),
                     cr3: process.map(|p| p.cr3),
                     frame: None,
+                    features: self.feature_state(),
                 };
                 // A returned error is an attachment/image failure. Typed game
                 // transitions are successful waiting frames and retain the CR3.
-                self.clear_target();
+                let mut snapshot = snapshot;
+                if let Err(restore) = self.clear_target() {
+                    self.requested_features = Requested::default();
+                    self.feature_message = format!("Restore pending: {restore:#}");
+                    snapshot
+                        .detail
+                        .push_str(&format!("\n{}", self.feature_message));
+                    snapshot.features = self.feature_state();
+                }
                 self.attach_retry.defer(Instant::now());
                 snapshot
             }
         }
     }
 
-    fn clear_target(&mut self) {
+    fn clear_target(&mut self) -> Result<()> {
+        self.restore_features()?;
+        self.patches = Controller::default();
+        self.attempted_features = None;
+        self.feature_message.clear();
         self.process = None;
         self.lifetime = None;
         self.profile = None;
@@ -226,6 +376,7 @@ impl Engine {
         self.manager_probe.reset();
         self.region_refresh.reset();
         self.build_detail.clear();
+        Ok(())
     }
 
     fn capture(&mut self) -> Result<Snapshot> {
@@ -238,7 +389,7 @@ impl Engine {
                 .alive()?
         {
             // The held process object remains signaled even if its PID is reused.
-            self.clear_target();
+            self.clear_target()?;
             self.attach_retry.defer(now);
             return Ok(Snapshot::waiting("Waiting for PointBlank"));
         }
@@ -309,6 +460,18 @@ impl Engine {
             connection: &self.connection,
             cr3: process.cr3,
         };
+        if self.attempted_features.is_none() {
+            let requested = self.requested_features;
+            self.feature_message.clear();
+            if (requested.names || requested.anti_kick || self.patches.owns_patches())
+                && let Err(error) =
+                    self.patches
+                        .sync(&memory, process.image_base as u32, profile, requested)
+            {
+                self.feature_message = format!("Feature patch: {error:#}");
+            }
+            self.attempted_features = Some(requested);
+        }
         let direct = profile.manager_wrappers.is_some();
         let mut direct_address = None;
         if direct {
@@ -462,7 +625,16 @@ impl Engine {
             base: Some(process.image_base),
             cr3: Some(process.cr3),
             frame: Some(frame),
+            features: self.feature_state(),
         })
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if let Err(error) = self.restore_features() {
+            eprintln!("Restore PointBlank features: {error:#}");
+        }
     }
 }
 

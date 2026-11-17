@@ -1,7 +1,7 @@
 // Copied from Palepale crates/df/src/common/chrome.rs at
 // 6490070271354e2a13a30e107065338c530a7322 (build/reference/palepale).
 // Product labels adapted; original shell and controls retained.
-use super::theme::{ACCENT, ACCENT_DIM, BG_DEEP, BORDER, TEXT, TEXT_DIM};
+use super::theme::{BG_DEEP, BORDER, TEXT, TEXT_DIM, accent, accent_dim, accent_hover};
 use imgui::{Condition, ImColor32, MouseButton, StyleColor, StyleVar, TextureId, Ui, WindowFlags};
 use std::collections::HashMap;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
@@ -91,6 +91,36 @@ fn vk_label(vk: i32) -> String {
 
 fn rgba(r: u8, g: u8, b: u8, a: u8) -> ImColor32 {
     ImColor32::from_rgba(r, g, b, a)
+}
+
+#[inline]
+fn color_with_alpha([r, g, b, _]: [f32; 4], alpha: u8) -> ImColor32 {
+    rgba(
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+        alpha,
+    )
+}
+
+#[inline]
+fn accent_color(alpha: u8) -> ImColor32 {
+    color_with_alpha(accent(), alpha)
+}
+
+#[inline]
+fn accent_shade_color(alpha: u8) -> ImColor32 {
+    let [r, g, b, a] = accent();
+    // Retain the original upper-gradient RGB (0, 217, 54) for Mint.
+    color_with_alpha(
+        [
+            r * (217.0 / 255.0),
+            g * (217.0 / 255.0),
+            b * (54.0 / 65.0),
+            a,
+        ],
+        alpha,
+    )
 }
 
 fn draw_tab_icon(dl: &imgui::DrawListMut, cx: f32, cy: f32, s: f32, col: ImColor32, key: &str) {
@@ -331,9 +361,9 @@ impl Chrome {
             }
             let hov = ui.is_item_hovered();
             let strip = if hov {
-                rgba(0, 255, 65, 48)
+                accent_color(48)
             } else {
-                rgba(0, 255, 65, 18)
+                accent_color(18)
             };
             let dl = ui.get_window_draw_list();
             dl.add_rect(wpos, [wpos[0] + wsz[0], wpos[1] + HEADER_H], strip)
@@ -347,8 +377,8 @@ impl Chrome {
             dl.add_rect_filled_multicolor(
                 wpos,
                 [wpos[0] + wsz[0], wpos[1] + wsz[1]],
-                rgba(0, 255, 65, 10),
-                rgba(0, 217, 54, 8),
+                accent_color(10),
+                accent_shade_color(8),
                 rgba(0, 0, 0, 10),
                 rgba(0, 0, 0, 10),
             );
@@ -358,7 +388,7 @@ impl Chrome {
                 dl.add_rect(
                     [wpos[0] - o, wpos[1] - o],
                     [wpos[0] + wsz[0] + o, wpos[1] + wsz[1] + o],
-                    rgba(0, 255, 65, a),
+                    accent_color(a),
                 )
                 .thickness(1.0)
                 .build();
@@ -380,8 +410,8 @@ impl Chrome {
             dl.add_rect_filled_multicolor(
                 wpos,
                 [wpos[0] + SIDEBAR_W, wpos[1] + wsz[1]],
-                rgba(0, 255, 65, 40),
-                rgba(13, 38, 20, 50),
+                accent_color(40),
+                color_with_alpha(accent_dim(), 50),
                 rgba(0, 0, 0, 40),
                 rgba(0, 0, 0, 40),
             );
@@ -397,7 +427,7 @@ impl Chrome {
                 .build();
             dl.add_text(
                 [wpos[0] + SIDEBAR_W + 10.0, wpos[1] + 10.0],
-                rgba(0, 255, 65, 210),
+                accent_color(210),
                 "EXTERNAL EVERYTHING",
             );
             dl.add_line(
@@ -456,9 +486,9 @@ impl Chrome {
             rgba(0, 0, 0, 0)
         };
         let tx = if active {
-            rgba(0, 255, 65, 255)
+            accent_color(255)
         } else if hovered {
-            rgba(50, 255, 103, 255)
+            color_with_alpha(accent_hover(), 255)
         } else {
             rgba(138, 138, 138, 255)
         };
@@ -470,7 +500,7 @@ impl Chrome {
             dl.add_rect(
                 [pos[0], pos[1] + 4.0],
                 [pos[0] + 3.0, pos[1] + h - 4.0],
-                rgba(0, 255, 65, 255),
+                accent_color(255),
             )
             .filled(true)
             .build();
@@ -515,11 +545,7 @@ impl Chrome {
         } else {
             "drag dummy"
         };
-        dl.add_text(
-            [origin[0] + 10.0, origin[1] + 8.0],
-            rgba(0, 255, 65, 160),
-            hint,
-        );
+        dl.add_text([origin[0] + 10.0, origin[1] + 8.0], accent_color(160), hint);
         let ox = origin[0] + self.preview_ox;
         let oy = origin[1] + self.preview_oy;
         let pt = |x: f32, y: f32| [ox + x, oy + y];
@@ -628,7 +654,7 @@ impl Chrome {
     }
 
     pub fn section(ui: &Ui, label: &str) {
-        let _c = ui.push_style_color(StyleColor::Text, ACCENT);
+        let _c = ui.push_style_color(StyleColor::Text, accent());
         ui.text(label);
         ui.separator();
         ui.spacing();
@@ -658,9 +684,9 @@ impl Chrome {
         let fh = h * scale;
         let ox = (w - fw) * 0.5;
         let oy = (h - fh) * 0.5;
-        let track = lerp_col(BG_DEEP, ACCENT_DIM, a);
-        let rim = lerp_col(BORDER, ACCENT, a);
-        let knob = lerp_col([0.2, 0.2, 0.2, 1.0], ACCENT, a);
+        let track = lerp_col(BG_DEEP, accent_dim(), a);
+        let rim = lerp_col(BORDER, accent(), a);
+        let knob = lerp_col([0.2, 0.2, 0.2, 1.0], accent(), a);
         let kx = pos[0] + ox + 3.0 * scale + a * (fw - fh);
         {
             let dl = ui.get_window_draw_list();

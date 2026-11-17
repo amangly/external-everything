@@ -11,7 +11,7 @@ The Windows x64 launcher uses GPUI. Each game gets its own module, with shared m
 3. Choose **PointBlank**. Start the game or join a match if the runtime is waiting.
 4. Press **INSERT** to toggle the menu or **END** to exit the runtime.
 
-PointBlank has boxes, health labels, a crosshair, and saved settings. Boxes use estimated body dimensions; team filtering and skeletons are unfinished. The reader checks the game build against its [profiles](<crates/external-runtime/src/games/pointblank/offsets.rs>).
+PointBlank has boxes, health labels, native name tags, dot/cross crosshairs, 3Q macros, and saved settings. Boxes use estimated body dimensions; team filtering and skeletons are unfinished. The reader checks the game build against its [profiles](<crates/external-runtime/src/games/pointblank/offsets.rs>).
 
 **Restore** uses the boot journal. The firmware entries remain **hyper-reV** and **Safe Windows**. See the [boot setup guide](<vendor/hyper-reV/loader/README.md>) for prerequisites and recovery.
 

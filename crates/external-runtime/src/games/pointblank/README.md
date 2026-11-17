@@ -21,4 +21,4 @@ Each entity has an address, float health, world position, and optional screen re
 
 [Reader code](<reader.rs>) handles capture and discovery. [Geometry](<geometry.rs>) projects positions. [Fixtures](<tests.rs>) test types, bounds, matrices, and collection changes.
 
-The original offsets came from the supplied `pointblank-cheat` sources. The newer profile adds checked RTTI and live field reads. PBZPTID's NameTag/AntiKick patch patterns are unused. See the [profile evidence](<../../../../../docs/pointblank-profile.md>).
+The original offsets came from the supplied `pointblank-cheat` sources. The newer profile adds checked RTTI and live field reads. The [patch controller](<patches.rs>) uses separately verified current-build name-tag and client kick-handler sites with owned rollback. See [feature offsets](<../../../../../docs/pointblank-features.md>) and [profile evidence](<../../../../../docs/pointblank-profile.md>).

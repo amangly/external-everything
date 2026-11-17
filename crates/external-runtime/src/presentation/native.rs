@@ -2,7 +2,7 @@
 // crates/df/src/pubg/mod.rs: Overlay/Gui synchronization, visibility, click-through,
 // menu polling and native frame pacing. Game capture remains the frozen Engine.
 use super::{
-    RunReport, esp,
+    RunReport, esp, macros,
     menu::Menu,
     settings::Settings,
     timing::{self, ReaderStats},
@@ -15,6 +15,7 @@ use crate::{
     },
     contract,
     engine::{Engine, Snapshot},
+    games::pointblank::patches::Requested,
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -38,7 +39,8 @@ struct Published {
 struct PollWorker {
     stop: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Published>>,
-    handle: Option<JoinHandle<()>>,
+    requested: Arc<Mutex<Requested>>,
+    handle: Option<JoinHandle<Result<()>>>,
 }
 
 impl PollWorker {
@@ -49,6 +51,8 @@ impl PollWorker {
             accepted_at: Instant::now(),
             stats: ReaderStats::default(),
         }));
+        let requested = Arc::new(Mutex::new(Requested::default()));
+        let worker_requested = requested.clone();
         let worker_stop = stop.clone();
         let worker_snapshot = snapshot.clone();
         let handle = thread::Builder::new()
@@ -56,6 +60,11 @@ impl PollWorker {
             .spawn(move || {
                 while !worker_stop.load(Ordering::Acquire) {
                     let started = Instant::now();
+                    let Ok(request) = worker_requested.lock() else {
+                        break;
+                    };
+                    engine.set_features(*request);
+                    drop(request);
                     let next = engine.poll();
                     if worker_stop.load(Ordering::Acquire) {
                         break;
@@ -90,13 +99,24 @@ impl PollWorker {
                     // worker too; a 100-ms sleep previously capped reads at 10 Hz.
                     overlay::cap_hz(timing::READER_HZ);
                 }
+                engine.restore_features()
             })
             .context("Start owned PointBlank frame-reader worker")?;
         Ok(Self {
             stop,
             snapshot,
+            requested,
             handle: Some(handle),
         })
+    }
+
+    fn request_features(&self, settings: &Settings) -> Result<()> {
+        *self
+            .requested
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PointBlank feature control lock was poisoned"))? =
+            settings.feature_request();
+        Ok(())
     }
 
     fn snapshot(&self) -> Result<(Snapshot, Option<f64>)> {
@@ -139,7 +159,7 @@ impl PollWorker {
             handle.thread().unpark();
             handle
                 .join()
-                .map_err(|_| anyhow::anyhow!("PointBlank frame-reader worker panicked"))?;
+                .map_err(|_| anyhow::anyhow!("PointBlank frame-reader worker panicked"))??;
         }
         Ok(())
     }
@@ -186,6 +206,8 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
     let mut gui = Gui::new_visible().context("Create native D3D11/ImGui menu")?;
     let _keys = KeyLifetime::start(settings.menu);
     let mut worker = PollWorker::start(engine)?;
+    worker.request_features(&settings)?;
+    let mut macro_worker = macros::Worker::start()?;
     let mut menu = Menu::default();
     let limit = limit.map(|duration| duration.min(MAX_SMOKE_DURATION));
     let mut last_top = Instant::now();
@@ -229,12 +251,25 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
         overlay.sync(snapshot.pid.unwrap_or(0));
         gui.sync(&overlay);
         menu.poll(&mut settings);
+        worker.request_features(&settings)?;
+        macro_worker.update(macros::Config {
+            enabled: settings.macro_enabled,
+            mode: if settings.macro_mode == 1 {
+                macros::Mode::Scope3Q
+            } else {
+                macros::Mode::ThreeQ
+            },
+            delay_ms: settings.macro_delay_ms(),
+            target_pid: snapshot.pid,
+            menu_open: settings.menu || !ready,
+        });
+        crate::common::theme::select(settings.theme);
         if !ready {
             settings.menu = true;
             keys::set_menu(true);
         }
         overlay.set_click_through(true);
-        let draw_overlay = snapshot.frame.is_some() && settings.draw_any();
+        let draw_overlay = (snapshot.frame.is_some() || settings.crosshair) && settings.draw_any();
         if draw_overlay {
             overlay.show();
         } else {
@@ -251,10 +286,16 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
         // Even an idle/game-closed start gets a real render target and a clear
         // pass. Clears also remove the previous snapshot when game data expires.
         overlay.begin().context("Begin Direct2D overlay frame")?;
-        let projected = snapshot
-            .frame
-            .as_ref()
-            .map_or(0, |frame| esp::draw(&overlay, frame, &settings));
+        let empty_frame = crate::games::pointblank::Frame {
+            width: overlay.w as f32,
+            height: overlay.h as f32,
+            ..Default::default()
+        };
+        let projected = esp::draw(
+            &overlay,
+            snapshot.frame.as_ref().unwrap_or(&empty_frame),
+            &settings,
+        );
         overlay.end().context("Present Direct2D overlay frame")?;
         if projected > 0 {
             report
@@ -298,6 +339,7 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
         }
         overlay::cap_hz(overlay.render_hz());
     }
+    macro_worker.shutdown()?;
     worker.shutdown()?;
     let seconds = started.elapsed().as_secs_f64().max(0.001);
     let stats = worker.statistics()?;

@@ -1,6 +1,8 @@
 // Drawing primitives adapted from amangly/palepale@6490070271354e2a13a30e107065338c530a7322
 // crates/df/src/pubg/esp.rs: box, shadowed label and four-segment crosshair.
 // The frozen PointBlank reader supplies the only entity and projection data.
+#[cfg(any(windows, test))]
+use super::settings::CrosshairStyle;
 #[cfg(windows)]
 use super::settings::Settings;
 #[cfg(windows)]
@@ -87,10 +89,13 @@ pub fn draw(overlay: &Overlay, frame: &Frame, settings: &Settings) -> usize {
     if !settings.draw_any() {
         return 0;
     }
-    let Some(view) = Viewport::fit(
-        [frame.width, frame.height],
-        [overlay.w as f32, overlay.h as f32],
-    ) else {
+    let target = [overlay.w as f32, overlay.h as f32];
+    let source = if frame.width > 0. && frame.height > 0. {
+        [frame.width, frame.height]
+    } else {
+        target
+    };
+    let Some(view) = Viewport::fit(source, target) else {
         return 0;
     };
     let mut projected = 0;
@@ -129,6 +134,15 @@ pub fn draw(overlay: &Overlay, frame: &Frame, settings: &Settings) -> usize {
     }
     if settings.crosshair {
         let [cx, cy] = view.center();
+        if settings.crosshair_style != CrosshairStyle::Segments {
+            let (rectangles, count, color) =
+                crosshair_rectangles(settings.crosshair_style, [cx, cy]);
+            let [r, g, b, a] = color;
+            for [x, y, w, h] in rectangles.into_iter().take(count) {
+                overlay.fill(x, y, w, h, r, g, b, a);
+            }
+            return projected;
+        }
         let ox = view.source[0] * view.scale * 0.007875;
         let oy = view.source[1] * view.scale * 0.014;
         let size = 5.0;
@@ -140,9 +154,45 @@ pub fn draw(overlay: &Overlay, frame: &Frame, settings: &Settings) -> usize {
     projected
 }
 
+#[cfg(any(windows, test))]
+fn crosshair_rectangles(
+    style: CrosshairStyle,
+    [cx, cy]: [f32; 2],
+) -> ([[f32; 4]; 2], usize, [f32; 4]) {
+    match style {
+        CrosshairStyle::Dot => ([[cx - 2., cy - 2., 4., 4.], [0.; 4]], 1, [1., 0., 0., 1.]),
+        CrosshairStyle::Cross => (
+            [[cx - 10., cy - 1., 20., 2.], [cx - 1., cy - 10., 2., 20.]],
+            2,
+            [0., 1., 0., 1.],
+        ),
+        CrosshairStyle::Segments => ([[0.; 4]; 2], 0, [0., 1., 0., 1.]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_dot_and_cross_have_exact_centered_pixel_dimensions() {
+        assert_eq!(
+            crosshair_rectangles(CrosshairStyle::Dot, [800., 600.]),
+            ([[798., 598., 4., 4.], [0.; 4]], 1, [1., 0., 0., 1.])
+        );
+        assert_eq!(
+            crosshair_rectangles(CrosshairStyle::Cross, [800., 600.]),
+            (
+                [[790., 599., 20., 2.], [799., 590., 2., 20.]],
+                2,
+                [0., 1., 0., 1.]
+            )
+        );
+        assert_eq!(
+            crosshair_rectangles(CrosshairStyle::Segments, [800., 600.]).1,
+            0
+        );
+    }
 
     #[test]
     fn same_aspect_scales_the_actual_camera_box() {

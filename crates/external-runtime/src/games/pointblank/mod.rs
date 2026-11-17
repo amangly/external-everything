@@ -6,6 +6,7 @@
 
 mod geometry;
 pub mod offsets;
+pub mod patches;
 mod reader;
 
 pub use offsets::{

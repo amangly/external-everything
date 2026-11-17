@@ -28,6 +28,16 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
+    if args.as_slice() == ["--verify-features"] {
+        let mut engine = Engine::new(Connection::open()?);
+        let snapshot = engine.poll();
+        engine.verify_feature_roundtrip()?;
+        println!(
+            "{}",
+            serde_json::json!({"game":"pointblank","pid":snapshot.pid,"names_patch":"verified","anti_kick_patch":"verified","original_bytes":"restored","transport":"hyper-reV CPUID virtual-copy"})
+        );
+        return Ok(());
+    }
     if args.len() == 4 && args[0] == "--read-pointblank" {
         let result = diagnostic::read_ranges(
             args[1].parse::<u32>()?,
@@ -73,7 +83,7 @@ fn run() -> Result<()> {
         }
         println!(
             "{}",
-            serde_json::json!({"game":"pointblank","status":snapshot.status,"detail":snapshot.detail,"pid":snapshot.pid,"base":snapshot.base,"cr3":snapshot.cr3,"entities":snapshot.frame.as_ref().map(|frame|frame.entities.len()).unwrap_or(0),"capture":snapshot.frame.as_ref().map(|frame|serde_json::json!({"manager":frame.manager,"screen":[frame.width,frame.height],"entities":frame.entities.iter().map(|entity|serde_json::json!({"address":entity.address,"health":entity.health,"position":entity.position,"screen":entity.screen})).collect::<Vec<_>>()}))})
+            serde_json::json!({"game":"pointblank","status":snapshot.status,"detail":snapshot.detail,"pid":snapshot.pid,"base":snapshot.base,"cr3":snapshot.cr3,"entities":snapshot.frame.as_ref().map(|frame|frame.entities.len()).unwrap_or(0),"features":snapshot.features,"capture":snapshot.frame.as_ref().map(|frame|serde_json::json!({"manager":frame.manager,"screen":[frame.width,frame.height],"entities":frame.entities.iter().map(|entity|serde_json::json!({"address":entity.address,"health":entity.health,"position":entity.position,"screen":entity.screen})).collect::<Vec<_>>()}))})
         );
         return Ok(());
     }
@@ -90,7 +100,7 @@ fn run() -> Result<()> {
     };
     ensure!(
         smoke || args.as_slice() == ["--game", "pointblank"],
-        "Use --game pointblank, contract --json, --snapshot, --self-test, or --render-smoke <seconds>"
+        "Use --game pointblank, contract --json, --snapshot, --self-test, --verify-features, or --render-smoke <seconds>"
     );
     contract::signal(contract::STARTED_EVENT)?;
     let engine = Engine::new(Connection::open()?);

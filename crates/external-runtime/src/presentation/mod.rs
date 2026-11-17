@@ -3,6 +3,8 @@
 //! crates/df/src/pubg/{mod,menu,settings,esp}.rs and common renderer APIs.
 mod esp;
 #[cfg(windows)]
+mod macros;
+#[cfg(windows)]
 mod menu;
 #[cfg(windows)]
 mod native;

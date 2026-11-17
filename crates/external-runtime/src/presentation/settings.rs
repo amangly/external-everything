@@ -1,6 +1,6 @@
 // Adapted from amangly/palepale@6490070271354e2a13a30e107065338c530a7322
 // crates/df/src/pubg/settings.rs: menu-open load, application storage and slots.
-// PointBlank persists only controls supported by the verified read-only frame.
+// PointBlank settings cover the external overlay and verified feature controls.
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,6 +12,15 @@ use std::{
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const SETTINGS_FILE: &str = "settings.json";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrosshairStyle {
+    #[default]
+    Segments,
+    Dot,
+    Cross,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
@@ -20,7 +29,15 @@ pub struct Settings {
     pub esp_master: bool,
     pub boxes: bool,
     pub health: bool,
+    pub names: bool,
+    pub anti_kick: bool,
     pub crosshair: bool,
+    pub crosshair_style: CrosshairStyle,
+    pub macro_enabled: bool,
+    pub macro_mode: u8,
+    pub macro_delay_preset: u8,
+    pub macro_custom_delay_ms: u32,
+    pub theme: u8,
     pub col_box: [f32; 4],
     #[serde(skip)]
     pub config_message: String,
@@ -33,7 +50,15 @@ impl Default for Settings {
             esp_master: true,
             boxes: true,
             health: true,
+            names: false,
+            anti_kick: false,
             crosshair: false,
+            crosshair_style: CrosshairStyle::Segments,
+            macro_enabled: false,
+            macro_mode: 1,
+            macro_delay_preset: 1,
+            macro_custom_delay_ms: 120,
+            theme: 0,
             col_box: [1.0, 1.0, 0.0, 1.0],
             config_message: String::new(),
         }
@@ -76,6 +101,19 @@ fn decode(bytes: &[u8]) -> Result<Settings> {
             .all(|value| value.is_finite() && (0.0..=1.0).contains(value)),
         "Box color components must be finite values between 0 and 1"
     );
+    ensure!(
+        (1..=2).contains(&settings.macro_mode),
+        "Macro mode is outside 1..=2"
+    );
+    ensure!(
+        settings.macro_delay_preset <= 4,
+        "Macro delay preset is outside 0..=4"
+    );
+    ensure!(
+        settings.macro_custom_delay_ms <= 9999,
+        "Macro custom delay exceeds 9999 ms"
+    );
+    ensure!(settings.theme <= 4, "Theme is outside 0..=4");
     // Startup and slot loading always leave the control window accessible.
     settings.menu = true;
     Ok(settings)
@@ -145,6 +183,23 @@ impl Settings {
         fs::write(path, bytes).context("Write PointBlank settings")
     }
 
+    pub fn feature_request(&self) -> crate::games::pointblank::patches::Requested {
+        crate::games::pointblank::patches::Requested {
+            names: self.esp_master && self.names,
+            anti_kick: self.anti_kick,
+        }
+    }
+
+    pub fn macro_delay_ms(&self) -> u32 {
+        match self.macro_delay_preset {
+            0 => 25,
+            1 => 50,
+            2 => 75,
+            3 => 100,
+            _ => self.macro_custom_delay_ms.min(9999),
+        }
+    }
+
     pub fn draw_any(&self) -> bool {
         self.esp_master && (self.boxes || self.health || self.crosshair)
     }
@@ -192,11 +247,57 @@ mod tests {
     }
 
     #[test]
+    fn source_feature_settings_preserve_modes_delays_and_themes() {
+        let original = Settings {
+            names: true,
+            anti_kick: true,
+            macro_enabled: true,
+            macro_mode: 2,
+            macro_delay_preset: 4,
+            macro_custom_delay_ms: 1234,
+            theme: 3,
+            crosshair_style: CrosshairStyle::Dot,
+            ..Default::default()
+        };
+        let loaded = decode(&serde_json::to_vec(&original).unwrap()).unwrap();
+        assert!(loaded.names && loaded.anti_kick && loaded.macro_enabled);
+        assert_eq!(
+            (loaded.macro_mode, loaded.macro_delay_ms(), loaded.theme),
+            (2, 1234, 3)
+        );
+        assert_eq!(loaded.crosshair_style, CrosshairStyle::Dot);
+        let mut settings = Settings::default();
+        for (index, delay) in [25, 50, 75, 100].into_iter().enumerate() {
+            settings.macro_delay_preset = index as u8;
+            assert_eq!(settings.macro_delay_ms(), delay);
+        }
+        for invalid in [
+            br#"{"macro_mode":0}"#.as_slice(),
+            br#"{"macro_mode":3}"#,
+            br#"{"macro_delay_preset":5}"#,
+            br#"{"macro_custom_delay_ms":10000}"#,
+            br#"{"theme":5}"#,
+            br#"{"crosshair_style":"unknown"}"#,
+        ] {
+            assert!(decode(invalid).is_err());
+        }
+        let legacy = decode(br#"{"crosshair":true}"#).unwrap();
+        assert!(legacy.crosshair);
+        assert_eq!(legacy.crosshair_style, CrosshairStyle::Segments);
+        assert!(!legacy.names && !legacy.anti_kick && !legacy.macro_enabled);
+    }
+
+    #[test]
     fn master_switch_disables_all_overlay_controls() {
         let mut settings = Settings::default();
         assert!(settings.draw_any());
+        settings.names = true;
+        settings.anti_kick = true;
+        assert!(settings.feature_request().names);
         settings.esp_master = false;
         settings.crosshair = true;
         assert!(!settings.draw_any());
+        assert!(!settings.feature_request().names);
+        assert!(settings.feature_request().anti_kick);
     }
 }

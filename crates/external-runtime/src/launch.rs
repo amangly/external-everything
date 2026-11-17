@@ -63,10 +63,40 @@ impl OwnedRuntime {
 impl Drop for OwnedRuntime {
     fn drop(&mut self) {
         if matches!(self.child.try_wait(), Ok(None)) {
+            #[cfg(windows)]
+            request_close(self.child.id());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
     }
+}
+
+#[cfg(windows)]
+fn request_close(pid: u32) {
+    use windows::Win32::{
+        Foundation::{BOOL, HWND, LPARAM, WPARAM},
+        UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE},
+    };
+    unsafe extern "system" fn close_owned(window: HWND, parameter: LPARAM) -> BOOL {
+        let mut owner = 0;
+        unsafe {
+            GetWindowThreadProcessId(window, Some(&mut owner));
+        }
+        if owner == parameter.0 as u32 {
+            let _ = unsafe { PostMessageW(window, WM_CLOSE, WPARAM(0), LPARAM(0)) };
+        }
+        BOOL(1)
+    }
+    // Give the owned runtime a normal exit path so it can release synthetic
+    // input and restore its game bytes before the bounded kill fallback.
+    let _ = unsafe { EnumWindows(Some(close_owned), LPARAM(pid as isize)) };
 }
 
 pub fn start(executable: &Path, game: &str) -> Result<OwnedRuntime> {
