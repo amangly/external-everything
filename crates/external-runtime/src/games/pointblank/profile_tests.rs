@@ -11,6 +11,7 @@ const SYNTHETIC_PROFILE: BuildProfile = BuildProfile {
     image_size: 0x0280_0000,
     framework_rva: 0x0200_0100,
     current_avatar_rva: 0x0200_0200,
+    manager_wrappers: None,
     framework_vtable: 0x0210_0100,
     camera_vtable: 0x0210_0200,
     view_vtable: 0x0210_0300,

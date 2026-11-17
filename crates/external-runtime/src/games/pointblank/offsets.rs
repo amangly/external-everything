@@ -52,6 +52,8 @@ pub struct BuildProfile {
     pub image_size: u32,
     pub framework_rva: u32,
     pub current_avatar_rva: u32,
+    /// Observed split-pointer singleton wrappers; absent for unproven builds.
+    pub manager_wrappers: Option<[u32; 2]>,
     pub framework_vtable: u32,
     pub camera_vtable: u32,
     pub view_vtable: u32,
@@ -68,6 +70,7 @@ pub const LEGACY_PROFILE: BuildProfile = BuildProfile {
     image_size: IMAGE_SIZE,
     framework_rva: FRAMEWORK_RVA,
     current_avatar_rva: CURRENT_AVATAR_RVA,
+    manager_wrappers: None,
     framework_vtable: FRAMEWORK_VTABLE_RVA,
     camera_vtable: CAMERA_VTABLE_RVA,
     view_vtable: VIEW_VTABLE_RVA,
@@ -85,6 +88,9 @@ pub const CURRENT_PROFILE: BuildProfile = BuildProfile {
     image_size: 0x01f7_c000,
     framework_rva: 0x0124_5088,
     current_avatar_rva: 0x0126_a100,
+    // Native singleton accessor + two-lifetime hyper-reV payload-sum proof.
+    // Each initialized zero-flags wrapper stores a payload pointer at +0x0c.
+    manager_wrappers: Some([0x0126_70b8, 0x0126_70cc]),
     framework_vtable: 0x00e6_8644,
     camera_vtable: 0x00e2_948c,
     view_vtable: 0x00e2_f76c,

@@ -712,3 +712,12 @@ fn scanner_rejects_duplicate_empty_or_changing_vectors() {
 
 #[path = "profile_tests.rs"]
 mod profile_tests;
+
+#[path = "live_tests.rs"]
+mod live_tests;
+
+#[path = "candidate_tests.rs"]
+mod candidate_tests;
+
+#[path = "direct_tests.rs"]
+mod direct_tests;

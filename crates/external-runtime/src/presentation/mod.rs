@@ -7,6 +7,7 @@ mod menu;
 #[cfg(windows)]
 mod native;
 mod settings;
+mod timing;
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct RunReport {
@@ -23,6 +24,19 @@ pub struct RunReport {
     pub game_pid: Option<u32>,
     pub d3d11_ready: bool,
     pub d2d_ready: bool,
+    pub elapsed_ms: f64,
+    pub render_hz: f64,
+    pub reader_polls: u64,
+    pub reader_hz: f64,
+    pub accepted_samples: u64,
+    pub transient_samples: u64,
+    pub capture_mean_ms: f64,
+    pub capture_max_ms: f64,
+    pub data_age_mean_ms: f64,
+    pub data_age_p95_ms: f64,
+    pub data_age_max_ms: f64,
+    pub time_to_collection_ms: Option<f64>,
+    pub time_to_first_esp_ms: Option<f64>,
 }
 
 #[cfg(windows)]

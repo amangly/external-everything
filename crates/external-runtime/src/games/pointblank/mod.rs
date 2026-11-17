@@ -11,9 +11,11 @@ mod reader;
 pub use offsets::{
     BuildProfile, CURRENT_PROFILE, EXPECTED_SHA256, IMAGE_SIZE, LEGACY_PROFILE, PROCESS_NAMES,
 };
+pub(crate) use reader::scan_manager_candidates_profile;
 pub use reader::{
-    capture, capture_profile, find_manager, find_manager_profile, validate_image,
-    validate_image_profile,
+    ManagerCandidate, capture, capture_live_profile, capture_profile, direct_manager_profile,
+    find_manager, find_manager_profile, manager_candidates_profile, probe_manager_profile,
+    validate_image, validate_image_profile,
 };
 
 /// A complete direct virtual-memory read in the already selected target process.

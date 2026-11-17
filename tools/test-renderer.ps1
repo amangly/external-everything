@@ -77,6 +77,7 @@ try {
     if ($process.ExitCode -ne 0) { throw "Renderer smoke failed: $errorText" }
     $report = $output | ConvertFrom-Json
     if (-not $report.d3d11_ready -or -not $report.d2d_ready -or $report.frames -lt 1 -or $report.menu_frames -lt 1) { throw 'Native render report lacks successful frames.' }
+    if (-not $CloseMenu -and $report.reader_hz -lt 30) { throw 'Native reader remains below the live update-rate target.' }
     $evidence = Join-Path (Split-Path -Parent $PSScriptRoot) ('build\renderer-verification-'+$nonce+'.json')
     $file = [IO.File]::Open($evidence,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
     try { $bytes=[Text.UTF8Encoding]::new($false).GetBytes($output); $file.Write($bytes,0,$bytes.Length); $file.Flush($true) } finally { $file.Dispose() }

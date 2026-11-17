@@ -66,6 +66,9 @@ fn run() -> Result<()> {
             {
                 break;
             }
+            // Discovery is time-gated independently from live capture. Allow
+            // bounded diagnostic scans to advance those gates instead of spinning.
+            std::thread::sleep(std::time::Duration::from_millis(8));
             snapshot = engine.poll();
         }
         println!(

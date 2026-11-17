@@ -231,6 +231,19 @@ struct Camera {
     product: [f32; 16],
 }
 
+impl Camera {
+    /// Matrix values may move during a live read; the typed object chain and
+    /// source viewport must still identify the same camera throughout capture.
+    fn same_identity(&self, other: &Self) -> bool {
+        self.framework == other.framework
+            && self.camera == other.camera
+            && self.view == other.view
+            && self.projection == other.projection
+            && self.width == other.width
+            && self.height == other.height
+    }
+}
+
 fn load_camera<M: Memory>(reader: &Reader<'_, M>, base: u32) -> Result<Camera> {
     let profile = reader.profile;
     let framework_address = reader.u32(module_address(base, profile.framework_rva, profile)?)?;
@@ -421,6 +434,36 @@ fn load_entity<M: Memory>(
     })
 }
 
+#[derive(Clone, Copy)]
+enum CaptureMode {
+    Strict,
+    Live,
+}
+
+impl CaptureMode {
+    fn accepts_camera(self, initial: &Camera, final_camera: &Camera) -> bool {
+        match self {
+            Self::Strict => initial == final_camera,
+            Self::Live => initial.same_identity(final_camera),
+        }
+    }
+
+    fn finish(self, frame: &mut Frame, camera: &Camera) {
+        if let Self::Live = self {
+            // Reproject the positions read in this capture, never cached world
+            // data or extrapolated positions, with the last valid typed camera.
+            for entity in &mut frame.entities {
+                entity.screen = geometry::rectangle(
+                    &camera.product,
+                    entity.position,
+                    camera.width,
+                    camera.height,
+                );
+            }
+        }
+    }
+}
+
 /// Captures either a proven full typed collection, or a single observed Avatar.
 /// Passing a manager never silently falls back to the unrelated current-Avatar
 /// slot. Invalid objects produce explicit empty/rejected states; a PE/build or
@@ -436,6 +479,30 @@ pub fn capture_profile(
     image_base: u32,
     manager: Option<u32>,
     profile: &BuildProfile,
+) -> Result<Frame> {
+    capture_internal(memory, image_base, manager, profile, CaptureMode::Strict)
+}
+
+/// Captures live positions while permitting natural view/projection movement.
+/// Both camera reads retain every typed/matrix proof guard; camera-chain identity
+/// and dimensions, collection entries, and Avatar field pointers remain stable.
+/// Every accepted entity is reprojected using the final validated camera. The
+/// caller verifies the selected profile's exact image hash before capture.
+pub fn capture_live_profile(
+    memory: &impl Memory,
+    image_base: u32,
+    manager: Option<u32>,
+    profile: &BuildProfile,
+) -> Result<Frame> {
+    capture_internal(memory, image_base, manager, profile, CaptureMode::Live)
+}
+
+fn capture_internal(
+    memory: &impl Memory,
+    image_base: u32,
+    manager: Option<u32>,
+    profile: &BuildProfile,
+    mode: CaptureMode,
 ) -> Result<Frame> {
     validate_image_profile(memory, image_base, profile)?;
     let reader = Reader::new(memory, profile);
@@ -467,15 +534,23 @@ pub fn capture_profile(
                 Err(_) => rejected += 1,
             }
         }
-        // Reread bounds AND every entry without deduplication. Reject the whole
-        // frame on mutation, including retyping or a changed camera snapshot.
+        // Reread bounds AND every entry without deduplication. Both modes reject
+        // collection mutation/retyping. Live mode permits matrix movement only
+        // within the same fully validated camera chain and source dimensions.
         let stable_collection =
             load_collection(&reader, image_base, manager).is_ok_and(|again| again == collection);
-        let stable_camera = load_camera(&reader, image_base).is_ok_and(|again| again == camera);
-        if !stable_collection || !stable_camera {
+        let final_camera = load_camera(&reader, image_base);
+        if !stable_collection
+            || !final_camera
+                .as_ref()
+                .is_ok_and(|again| mode.accepts_camera(&camera, again))
+        {
             frame.entities.clear();
             frame.status = "CollectionChanged: frame discarded after consistency recheck".into();
             return Ok(frame);
+        }
+        if let Ok(final_camera) = final_camera {
+            mode.finish(&mut frame, &final_camera);
         }
         frame.status = format!(
             "FullCollection: {} typed entries, {} entities, {rejected} rejected; estimated boxes",
@@ -503,27 +578,155 @@ pub fn capture_profile(
             return Ok(frame);
         }
     };
-    if reader.u32(slot).ok() != Some(avatar)
-        || !load_camera(&reader, image_base).is_ok_and(|again| again == camera)
-    {
+    let stable_slot = reader.u32(slot).ok() == Some(avatar);
+    // Preserve the strict path's short-circuit read order for its diagnostic
+    // contract while applying the same live camera proof as full collections.
+    let final_camera = if stable_slot {
+        load_camera(&reader, image_base).ok()
+    } else {
+        None
+    };
+    let Some(final_camera) = final_camera.filter(|again| mode.accepts_camera(&camera, again))
+    else {
         frame.status = "SingleAvatarChanged: observed slot/camera changed; frame discarded".into();
         return Ok(frame);
-    }
+    };
     frame.entities.push(entity);
+    mode.finish(&mut frame, &final_camera);
     frame.status =
         "SingleAvatar: one observed callback slot; full collection unresolved; estimated box"
             .into();
     Ok(frame)
 }
 
+/// A freshly proven manager, including a valid lobby-time empty collection.
+#[derive(Clone, Debug)]
+pub struct ManagerCandidate {
+    pub address: u32,
+    pub count: usize,
+}
+
+fn probe_manager<M: Memory>(
+    reader: &Reader<'_, M>,
+    base: u32,
+    address: u32,
+) -> Result<ManagerCandidate> {
+    let collection = load_collection(reader, base, address)?;
+    ensure!(
+        load_collection(reader, base, address)? == collection,
+        "manager collection changed during probe"
+    );
+    Ok(ManagerCandidate {
+        address,
+        count: collection.entries.len(),
+    })
+}
+
+/// Revalidates a cached address using live PE identity, manager type, backlink,
+/// vector bounds, unique typed entries, and a second identical collection read.
+/// An empty vector is valid; this proof establishes a manager rather than players.
+pub fn probe_manager_profile(
+    memory: &impl Memory,
+    base: u32,
+    address: u32,
+    profile: &BuildProfile,
+) -> Result<ManagerCandidate> {
+    validate_image_profile(memory, base, profile)?;
+    probe_manager(&Reader::new(memory, profile), base, address)
+}
+
+/// Resolves the observed split-pointer manager singleton without a heap scan.
+///
+/// The caller first selects the profile by its full executable hash. A profile
+/// without proven wrapper RVAs performs zero reads. For supported profiles, PE
+/// identity failures remain errors; uninitialized, unsupported, unreadable or
+/// changing singleton state returns `None` for a fresh bounded retry. Only the
+/// observed initialized/zero-flags wrapper layout is supported, rather than a
+/// general decoder for the game's protected-value API.
+pub fn direct_manager_profile(
+    memory: &impl Memory,
+    base: u32,
+    profile: &BuildProfile,
+) -> Result<Option<ManagerCandidate>> {
+    let Some(rvas) = profile.manager_wrappers else {
+        return Ok(None);
+    };
+    validate_image_profile(memory, base, profile)?;
+    let reader = Reader::new(memory, profile);
+    let proof = || -> Result<ManagerCandidate> {
+        let address = |rva: u32| -> Result<u64> {
+            ensure!(
+                rva & 3 == 0
+                    && rva
+                        .checked_add(0x14)
+                        .is_some_and(|end| end <= profile.image_size),
+                "manager wrapper exceeds selected profile image"
+            );
+            module_address(base, rva, profile)
+        };
+        let addresses = [address(rvas[0])?, address(rvas[1])?];
+        let wrappers = [
+            reader.block::<0x14>(addresses[0])?,
+            reader.block::<0x14>(addresses[1])?,
+        ];
+        let payload_pointer = |wrapper: &[u8; 0x14]| -> Result<u32> {
+            ensure!(
+                u32_at(wrapper, 0) == 0
+                    && u32_at(wrapper, 4) == 0
+                    && u32_at(wrapper, 8) == 1
+                    && u32_at(wrapper, 0x10) == 0,
+                "uninitialized or unsupported manager wrapper"
+            );
+            let payload = u32_at(wrapper, 0x0c);
+            ensure!(
+                pointer(payload) && payload & 3 == 0,
+                "invalid manager wrapper payload pointer"
+            );
+            Ok(payload)
+        };
+        let pointers = [
+            payload_pointer(&wrappers[0])?,
+            payload_pointer(&wrappers[1])?,
+        ];
+        let payloads = [
+            reader.u32(u64::from(pointers[0]))?,
+            reader.u32(u64::from(pointers[1]))?,
+        ];
+        let manager = payloads[0].wrapping_add(payloads[1]);
+        ensure!(
+            pointer(manager) && manager & 3 == 0,
+            "invalid decoded manager pointer"
+        );
+        // Reuse the existing two-pass type/backlink/vector/unique-entry proof;
+        // a stable empty collection is a legitimate lobby-time owner.
+        let candidate = probe_manager(&reader, base, manager)?;
+        let final_wrappers = [
+            reader.block::<0x14>(addresses[0])?,
+            reader.block::<0x14>(addresses[1])?,
+        ];
+        let final_payloads = [
+            reader.u32(u64::from(pointers[0]))?,
+            reader.u32(u64::from(pointers[1]))?,
+        ];
+        ensure!(
+            final_wrappers == wrappers && final_payloads == payloads,
+            "manager singleton changed during direct proof"
+        );
+        Ok(candidate)
+    };
+    Ok(proof().ok())
+}
+
 struct BudgetMemory<'a, M: Memory> {
     inner: &'a M,
     remaining: Cell<usize>,
+    exhausted: Cell<bool>,
 }
 
 impl<M: Memory> Memory for BudgetMemory<'_, M> {
     fn read(&self, address: u64, out: &mut [u8]) -> Result<()> {
         let Some(remaining) = self.remaining.get().checked_sub(out.len()) else {
+            self.exhausted.set(true);
             bail!("manager scan byte budget exhausted");
         };
         // Failed attempts also consume budget, including snapshot fallbacks.
@@ -559,6 +762,49 @@ pub fn find_manager_profile(
     byte_budget: usize,
     profile: &BuildProfile,
 ) -> Result<Option<u32>> {
+    Ok(
+        scan_managers(memory, base, regions, byte_budget, profile, false, 1)?
+            .0
+            .first()
+            .map(|candidate| candidate.address),
+    )
+}
+
+/// Finds up to 64 stable typed/backlinked managers, including valid empty vectors.
+/// Attempted reads share the same byte budget as strict discovery. Empty managers
+/// establish a cacheable address, never a claim that a live player was found.
+pub fn manager_candidates_profile(
+    memory: &impl Memory,
+    base: u32,
+    regions: &[(u64, usize)],
+    byte_budget: usize,
+    profile: &BuildProfile,
+) -> Result<Vec<ManagerCandidate>> {
+    Ok(scan_manager_candidates_profile(memory, base, regions, byte_budget, profile)?.0)
+}
+
+/// The consumed prefix is measured across the supplied region lengths, including
+/// skipped/unreadable ranges. A budget stop before a proof leaves that candidate
+/// unconsumed, so incremental callers retry it instead of skipping a window tail.
+pub(crate) fn scan_manager_candidates_profile(
+    memory: &impl Memory,
+    base: u32,
+    regions: &[(u64, usize)],
+    byte_budget: usize,
+    profile: &BuildProfile,
+) -> Result<(Vec<ManagerCandidate>, usize)> {
+    scan_managers(memory, base, regions, byte_budget, profile, true, 64)
+}
+
+fn scan_managers(
+    memory: &impl Memory,
+    base: u32,
+    regions: &[(u64, usize)],
+    byte_budget: usize,
+    profile: &BuildProfile,
+    allow_empty: bool,
+    limit: usize,
+) -> Result<(Vec<ManagerCandidate>, usize)> {
     validate_image_profile(memory, base, profile)?;
     let wanted = u32::try_from(module_address(
         base,
@@ -568,17 +814,29 @@ pub fn find_manager_profile(
     let budget = BudgetMemory {
         inner: memory,
         remaining: Cell::new(byte_budget),
+        exhausted: Cell::new(false),
     };
     let reader = Reader::new(&budget, profile);
-    for &(region_base, region_size) in regions {
-        let Ok(region_size) = u64::try_from(region_size) else {
-            continue;
+    let mut candidates: Vec<ManagerCandidate> = Vec::new();
+    let mut consumed = 0usize;
+    for &(region_base, region_length) in regions {
+        let region_consumed = |cursor: u64| {
+            consumed.saturating_add(
+                usize::try_from(cursor.saturating_sub(region_base))
+                    .unwrap_or(region_length)
+                    .min(region_length),
+            )
         };
-        let Some(end) = region_base.checked_add(region_size) else {
+        let end = u64::try_from(region_length)
+            .ok()
+            .and_then(|length| region_base.checked_add(length));
+        let Some(end) = end else {
+            consumed = consumed.saturating_add(region_length);
             continue;
         };
         let end = end.min(ADDRESS_LIMIT);
         let Some(aligned) = region_base.max(MIN_POINTER).checked_add(3) else {
+            consumed = consumed.saturating_add(region_length);
             continue;
         };
         let mut cursor = aligned & !3;
@@ -589,7 +847,7 @@ pub fn find_manager_profile(
             }
             let length = available.min(0x1_0000).min(budget.remaining.get() / 2) & !3;
             if length < 4 {
-                return Ok(None);
+                return Ok((candidates, region_consumed(cursor)));
             }
             let mut bytes = vec![0; length];
             if reader.read_into(cursor, &mut bytes).is_ok() {
@@ -597,23 +855,36 @@ pub fn find_manager_profile(
                     if u32_at(entry, 0) != wanted {
                         continue;
                     }
-                    let offset = u64::try_from(index)?
-                        .checked_mul(4)
-                        .context("scan index overflow")?;
-                    let candidate = cursor
-                        .checked_add(offset)
+                    let address = cursor
+                        .checked_add(u64::try_from(index)? * 4)
                         .context("scan address overflow")?;
-                    let Ok(candidate) = u32::try_from(candidate) else {
+                    let Ok(candidate) = u32::try_from(address) else {
                         continue;
                     };
-                    let Ok(collection) = load_collection(&reader, base, candidate) else {
+                    if candidates.iter().any(|known| known.address == candidate) {
                         continue;
-                    };
-                    if !collection.entries.is_empty()
-                        && load_collection(&reader, base, candidate)
-                            .is_ok_and(|again| again == collection)
-                    {
-                        return Ok(Some(candidate));
+                    }
+                    let proof = load_collection(&reader, base, candidate).and_then(|collection| {
+                        if !allow_empty && collection.entries.is_empty() {
+                            return Ok(None);
+                        }
+                        ensure!(
+                            load_collection(&reader, base, candidate)? == collection,
+                            "manager collection changed during discovery"
+                        );
+                        Ok(Some(ManagerCandidate {
+                            address: candidate,
+                            count: collection.entries.len(),
+                        }))
+                    });
+                    if budget.exhausted.get() {
+                        return Ok((candidates, region_consumed(address)));
+                    }
+                    if let Ok(Some(candidate)) = proof {
+                        candidates.push(candidate);
+                        if candidates.len() == limit {
+                            return Ok((candidates, region_consumed(address + 4)));
+                        }
                     }
                 }
             }
@@ -621,6 +892,7 @@ pub fn find_manager_profile(
                 .checked_add(u64::try_from(length)?)
                 .context("scan cursor overflow")?;
         }
+        consumed = consumed.saturating_add(region_length);
     }
-    Ok(None)
+    Ok((candidates, consumed))
 }

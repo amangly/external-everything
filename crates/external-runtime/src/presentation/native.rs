@@ -1,7 +1,12 @@
 // Render-loop plumbing adapted from amangly/palepale@6490070271354e2a13a30e107065338c530a7322
 // crates/df/src/pubg/mod.rs: Overlay/Gui synchronization, visibility, click-through,
 // menu polling and native frame pacing. Game capture remains the frozen Engine.
-use super::{RunReport, esp, menu::Menu, settings::Settings};
+use super::{
+    RunReport, esp,
+    menu::Menu,
+    settings::Settings,
+    timing::{self, ReaderStats},
+};
 use crate::{
     common::{
         imgui_ui::Gui,
@@ -21,20 +26,29 @@ use std::{
     time::{Duration, Instant},
 };
 
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_SMOKE_DURATION: Duration = Duration::from_secs(10);
+
+struct Published {
+    snapshot: Snapshot,
+    accepted_at: Instant,
+    stats: ReaderStats,
+}
 
 /// Owns the only Engine. Its mutex protects published snapshots, never I/O.
 struct PollWorker {
     stop: Arc<AtomicBool>,
-    snapshot: Arc<Mutex<Snapshot>>,
+    snapshot: Arc<Mutex<Published>>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl PollWorker {
     fn start(mut engine: Engine) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
-        let snapshot = Arc::new(Mutex::new(Snapshot::waiting("Waiting for PointBlank")));
+        let snapshot = Arc::new(Mutex::new(Published {
+            snapshot: Snapshot::waiting("Waiting for PointBlank"),
+            accepted_at: Instant::now(),
+            stats: ReaderStats::default(),
+        }));
         let worker_stop = stop.clone();
         let worker_snapshot = snapshot.clone();
         let handle = thread::Builder::new()
@@ -49,13 +63,32 @@ impl PollWorker {
                     let Ok(mut published) = worker_snapshot.lock() else {
                         break;
                     };
-                    *published = next;
-                    drop(published);
-                    if let Some(remaining) = POLL_INTERVAL.checked_sub(started.elapsed()) {
-                        // Exit wakes this wait immediately; the reader's discovery
-                        // work itself is already bounded by Engine's 2 MiB budget.
-                        thread::park_timeout(remaining);
+                    let status = next
+                        .frame
+                        .as_ref()
+                        .map(|frame| frame.status.as_str())
+                        .unwrap_or(&next.status);
+                    let accepted = status.starts_with("FullCollection:")
+                        || status.starts_with("SingleAvatar:");
+                    let transient = status.starts_with("CollectionChanged:")
+                        || status.starts_with("SingleAvatarChanged:");
+                    let retain = timing::retain_transient(
+                        status,
+                        next.pid == published.snapshot.pid,
+                        published.snapshot.frame.is_some(),
+                        published.accepted_at.elapsed(),
+                    );
+                    published
+                        .stats
+                        .record(started.elapsed(), accepted, transient);
+                    if !retain {
+                        published.snapshot = next;
+                        published.accepted_at = Instant::now();
                     }
+                    drop(published);
+                    // Use the reference's high-resolution waitable timer on this
+                    // worker too; a 100-ms sleep previously capped reads at 10 Hz.
+                    overlay::cap_hz(timing::READER_HZ);
                 }
             })
             .context("Start owned PointBlank frame-reader worker")?;
@@ -66,17 +99,37 @@ impl PollWorker {
         })
     }
 
-    fn snapshot(&self) -> Result<Snapshot> {
+    fn snapshot(&self) -> Result<(Snapshot, Option<f64>)> {
         ensure!(
             self.handle
                 .as_ref()
                 .is_some_and(|worker| !worker.is_finished()),
             "PointBlank frame-reader worker exited unexpectedly"
         );
+        let published = self
+            .snapshot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PointBlank snapshot lock was poisoned"))?;
+        let age = published.accepted_at.elapsed();
+        let mut snapshot = published.snapshot.clone();
+        if snapshot.frame.is_some() && age > timing::MAX_DATA_AGE {
+            snapshot.frame = None;
+            snapshot.status = "Waiting for fresh frame".into();
+        }
+        let data_age = snapshot
+            .frame
+            .as_ref()
+            .filter(|frame| !frame.entities.is_empty())
+            .map(|_| age.as_secs_f64() * 1000.);
+        Ok((snapshot, data_age))
+    }
+
+    fn statistics(&self) -> Result<ReaderStats> {
         Ok(self
             .snapshot
             .lock()
             .map_err(|_| anyhow::anyhow!("PointBlank snapshot lock was poisoned"))?
+            .stats
             .clone())
     }
 
@@ -125,6 +178,7 @@ fn pump_thread_quit() {
 /// READY_EVENT is signaled only after both native windows and actual successful
 /// Direct2D plus D3D11/ImGui menu paint passes, independently of game availability.
 pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
+    let started = Instant::now();
     let mut settings = Settings::load();
     settings.menu = true;
     let mut overlay =
@@ -133,10 +187,10 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
     let _keys = KeyLifetime::start(settings.menu);
     let mut worker = PollWorker::start(engine)?;
     let mut menu = Menu::default();
-    let started = Instant::now();
     let limit = limit.map(|duration| duration.min(MAX_SMOKE_DURATION));
     let mut last_top = Instant::now();
     let mut report = RunReport::default();
+    let mut ages = Vec::new();
     let mut ready = false;
 
     loop {
@@ -152,7 +206,21 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
             break;
         }
 
-        let snapshot = worker.snapshot()?;
+        let (snapshot, data_age) = worker.snapshot()?;
+        if let Some(age) = data_age {
+            if ages.len() == 4096 {
+                ages.remove(0);
+            }
+            ages.push(age);
+        }
+        if report.time_to_collection_ms.is_none()
+            && snapshot
+                .frame
+                .as_ref()
+                .is_some_and(|frame| frame.manager.is_some() && !frame.entities.is_empty())
+        {
+            report.time_to_collection_ms = Some(started.elapsed().as_secs_f64() * 1000.);
+        }
         report.game_pid = snapshot.pid;
         report.entities = snapshot
             .frame
@@ -189,6 +257,9 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
             .map_or(0, |frame| esp::draw(&overlay, frame, &settings));
         overlay.end().context("Present Direct2D overlay frame")?;
         if projected > 0 {
+            report
+                .time_to_first_esp_ms
+                .get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.);
             report.esp_frames = report.esp_frames.saturating_add(1);
         }
         report.projected_entities = report.projected_entities.max(projected);
@@ -225,9 +296,25 @@ pub fn run(engine: Engine, limit: Option<Duration>) -> Result<RunReport> {
             }
             last_top = Instant::now();
         }
-        overlay::cap_hz(60);
+        overlay::cap_hz(overlay.render_hz());
     }
     worker.shutdown()?;
+    let seconds = started.elapsed().as_secs_f64().max(0.001);
+    let stats = worker.statistics()?;
+    report.elapsed_ms = seconds * 1000.;
+    report.render_hz = report.frames as f64 / seconds;
+    report.reader_polls = stats.polls;
+    report.reader_hz = stats.polls as f64 / seconds;
+    report.accepted_samples = stats.accepted;
+    report.transient_samples = stats.transient;
+    report.capture_mean_ms = stats.mean_ms();
+    report.capture_max_ms = stats.max_ms;
+    if !ages.is_empty() {
+        report.data_age_mean_ms = ages.iter().sum::<f64>() / ages.len() as f64;
+        ages.sort_by(f64::total_cmp);
+        report.data_age_max_ms = ages[ages.len() - 1];
+        report.data_age_p95_ms = ages[((ages.len() - 1) as f64 * 0.95).ceil() as usize];
+    }
     ensure!(
         ready,
         "Native presentation exited before its first successful menu frame"

@@ -36,6 +36,10 @@ Direct hyper-reV reads verified:
 
 Machine-local records: [image identity and section coverage](<../build/pointblank-live-prefault-b92e786000b848bbb91947a31c2fc7fe/evidence.json>), [seven RTTI chains](<../build/pointblank-live-prefault-b92e786000b848bbb91947a31c2fc7fe/core-rtti.json>), [camera/Avatar chain and consistency rereads](<../build/pointblank-live-prefault-b92e786000b848bbb91947a31c2fc7fe/chain-proof-c14a95ee91374233b588c6881b9ac328.json>), and [full-collection frame](<../build/pointblank-collection-6e9ed0a515194a21a1002c2589b9f32d.json>). Generated captures remain outside Git; the profiles and validation code are versioned.
 
+## Direct manager startup
+
+The current profile also registers value-wrapper RVAs `0x012670B8` and `0x012670CC`. Their payload pointers are at `+0x0C`; adding the two payload words with x86 wrapping arithmetic resolves the manager. Two process lifetimes, native initialization/accessor code, and callback copy behavior support this path. The reader requires initialized zero-flag wrappers, stable wrapper/payload rereads, and the full typed collection proof. See [direct startup evidence and timings](<pointblank-direct-startup.md>). The legacy profile retains bounded discovery.
+
 ## Transport and launch checks
 
 The [transport](<../crates/hyperrev-transport/src/lib.rs>) uses this fork's full-width CPUID ABI, including the actual target CR3. Native tests exercised read/write/restore against self-owned 32-byte and 65-KiB buffers and validated automatic current-process discovery. The PointBlank capture path reads game memory; these write tests affect only their own allocations.

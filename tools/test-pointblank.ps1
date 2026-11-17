@@ -37,6 +37,11 @@ if ($snapshot.game -ne 'pointblank') { throw 'PointBlank snapshot identity diffe
 if ($snapshot.pid -and $snapshot.status -eq 'PointBlank check failed') { throw "PointBlank capture failed: $($snapshot.detail)" }
 $render = Invoke-Json $runtimePath '--render-smoke 5' 30000
 if (-not $render.d3d11_ready -or -not $render.d2d_ready -or $render.frames -lt 1 -or $render.menu_frames -lt 1) { throw 'Palepale Direct3D/ImGui rendering verification failed.' }
+if ($render.reader_hz -lt 30) { throw 'Live PointBlank reader update rate remains below target.' }
+$performance = Join-Path (Split-Path -Parent $PSScriptRoot) ('build\pointblank-performance-'+[guid]::NewGuid().ToString('N')+'.json')
+$file=[IO.File]::Open($performance,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+try { $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($render|ConvertTo-Json -Depth 5)); $file.Write($bytes,0,$bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+Write-Output "PERFORMANCE=$performance"
 $launch = Invoke-Json $launcherPath '--verify-runtime-launch' 40000
 if (-not $launch.started -or -not $launch.window_ready -or $launch.game -ne 'pointblank') { throw 'Launcher-to-runtime event acknowledgements failed.' }
 if (Get-Process -Id $launch.runtime_pid -ErrorAction SilentlyContinue) { throw 'Launcher-owned test runtime survived session cleanup.' }
