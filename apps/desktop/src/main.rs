@@ -26,6 +26,14 @@ fn run() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    if std::env::args().any(|argument| argument == "--verify-runtime-launch") {
+        let session = backend::launch("pointblank")?;
+        println!(
+            "{}",
+            serde_json::json!({"game":session.game_id,"runtime_pid":session.pid(),"started":true,"window_ready":true})
+        );
+        return Ok(());
+    }
     if hyperrev_loader::platform::elevate_gui_if_needed()? {
         return Ok(());
     }

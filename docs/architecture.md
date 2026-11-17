@@ -2,19 +2,23 @@
 
 ## Ownership
 
-External Everything owns its Windows x64 GPUI launcher, route state, game chooser, attachment-check isolation, catalog, and external-process supervision. The pinned hyper-reV fork owns boot installation and its native attachment. The application calls the vendor backend; it has replaced the earlier shared-UI wrapper.
+External Everything owns the Windows x64 GPUI loader/game chooser, attachment-check isolation, catalog, external runtime, and process supervision. **GPUI is launcher-only.** The external ESP and cheat menu directly reuse the pinned Palepale shared Direct2D/DirectWrite and D3D11/ImGui/Chrome implementation. The maintained hyper-reV fork owns boot installation and its native attachment; the app calls its backend rather than its setup UI.
 
 ```text
 Application GPUI loader
-  -> app backend -> hyper-reV Setup / Restore -> firmware / ESP + recovery journal
-  -> isolated same-executable probe -> hyperrev-transport -> attached hyper-reV
-  -> attachment-ready Games chooser -> catalog + executable verification
-  -> owned external child process -> child exit -> chooser
+  -> hyper-reV Setup / Restore -> firmware / ESP + recovery journal
+  -> isolated attachment check -> hyperrev-transport -> attached hyper-reV
+  -> Ready Games chooser -> runtime hash / PE / version / ABI contract
+  -> owned PointBlank child -> started + first-renderer-frame acknowledgements
+      -> background engine -> checked target CR3 -> typed frame reader
+      -> copied Palepale Direct2D/DirectWrite ESP
+      -> copied Palepale D3D11/ImGui/Chrome menu
+  -> child exit -> readiness/catalog recheck -> chooser or loader
 ```
 
-The [workspace](<../Cargo.toml>) contains the [desktop application](<../apps/desktop/Cargo.toml>) and [transport crate](<../crates/hyperrev-transport/Cargo.toml>). The [entry point](<../apps/desktop/src/main.rs>) handles the internal probe before normal UAC elevation and starts the [application UI](<../apps/desktop/src/ui.rs>).
+The [workspace](<../Cargo.toml>) contains the [desktop](<../apps/desktop/Cargo.toml>), [transport](<../crates/hyperrev-transport/Cargo.toml>), and [external-runtime](<../crates/external-runtime/Cargo.toml>) crates. The [desktop entry](<../apps/desktop/src/main.rs>) handles its internal probe before UAC elevation and starts the [app-owned UI](<../apps/desktop/src/ui.rs>).
 
-## Current lifecycle
+## Launcher lifecycle
 
 | Observation | Route |
 | --- | --- |
@@ -24,49 +28,69 @@ The [workspace](<../Cargo.toml>) contains the [desktop application](<../apps/des
 | Exact attachment test response and usable guest CR3 | Games chooser |
 | Inspection/setup/probe failure | Error with details and retry |
 
-Only attachment readiness opens the chooser. Setup success, installed firmware entries, and catalog contents independently grant zero game-launch capability. Setup and Restore call `hyperrev_loader::app::perform` through the [backend](<../apps/desktop/src/backend.rs>); they retain the vendor's validation, journaling, ownership checks, and manual-restart policy. A running attachment can remain responsive until the next Windows boot even after Restore.
+Only attachment readiness opens Games. Setup success and catalog metadata independently grant zero launch capability. [Setup/Restore delegation](<../apps/desktop/src/backend.rs>) retains the vendor's validation, journal, ownership checks, and manual restart. A running attachment may remain responsive until the next boot even after Restore.
 
-The [UI](<../apps/desktop/src/ui.rs>) opens a real chooser window before removing the previous loader window. Work runs through background tasks, and a failed window handoff leaves the existing window alive. The chooser stays alive during an external session; completion refocuses it, asynchronously rechecks readiness/catalog state, and returns to the loader if the attachment is absent. Child-exit errors survive that recheck in the details. Every later launch also performs fresh attachment checks. The [runtime guide](<../games/README.md>) specifies the current child integration boundary.
+The UI opens a real replacement window before closing its predecessor. Background work leaves errors visible; a failed handoff preserves the existing window. The chooser stays alive while its child runs. Child exit triggers an asynchronous readiness/catalog recheck; absent readiness returns to the loader, and exit errors survive in details. Every later launch also checks readiness again.
 
-### Isolated readiness check
+### Isolated attachment probe
 
-The [probe controller](<../apps/desktop/src/probe.rs>) starts the same executable with `--internal-attachment-probe`, captures a bounded JSON result, and enforces a three-second deadline. A crash, timeout, invalid response, or unusable CR3 surfaces as an error rather than opening the chooser. The parent reaps a failed probe.
+The [probe controller](<../apps/desktop/src/probe.rs>) starts the same executable with `--internal-attachment-probe`, accepts bounded schema-1 JSON, and enforces a three-second deadline. Crashes, timeouts, invalid results, or unusable CR3 values leave Games locked. [Transport classification](<../crates/hyperrev-transport/src/lib.rs>) checks the exact vendor test response and a nonempty CR3 physical-frame field. This establishes protocol readiness, rather than cryptographic attachment identity or game compatibility.
 
-The schema-1 result contains `response` and `cr3`. [Transport classification](<../crates/hyperrev-transport/src/lib.rs>) requires the fork's exact test response, then a nonempty CR3 physical-frame field. It follows the pinned vendor calling convention. This is observed protocol readiness, rather than cryptographic attachment identity or a claim about a game backend. The transport currently exposes readiness only; guest-memory read/write APIs remain future work.
+## Catalog, contract, and child ownership
 
-### Catalog and external runtime
+The source [catalog](<../games/catalog.json>) registers PointBlank by ID/name. [Build](<../tools/build.ps1>) fills the published executable path and hash. [Catalog validation](<../apps/desktop/src/catalog.rs>) checks schema, unique IDs, relative paths, link rejection, bounded size, runtime SHA-256, and x64 PE shape.
 
-The executable-relative [catalog](<../games/catalog.json>) begins with an empty `games` array. Named entries without an executable/hash pair appear pending. [Catalog loading](<../apps/desktop/src/catalog.rs>) enforces schema, identifier uniqueness, bounded sizes, relative executable paths within the games directory, and link rejection. Before spawning, it verifies the catalog SHA-256 and x64 PE image shape.
+[Launch](<../apps/desktop/src/backend.rs>) checks attachment, verifies the runtime, rechecks attachment, then calls the [runtime startup coordinator](<../crates/external-runtime/src/launch.rs>). That coordinator:
 
-[Runtime launch](<../apps/desktop/src/backend.rs>) checks readiness, resolves and verifies the catalog executable, checks readiness again, and starts:
+1. Runs `contract --json` with a five-second deadline and bounded output.
+2. [Validates](<../crates/external-runtime/src/contract.rs>) schema `1`, identity `external-runtime`, exact workspace version, backend ABI `hyper-rev/cpuid-8a3b55c7927/v1`, and one selected game entry with pointer-width/build/process metadata.
+3. Starts `external-runtime.exe --game pointblank` from its directory.
+4. Waits up to eight seconds for `EXTERNAL_EVERYTHING_STARTED_EVENT`, then twenty seconds for `EXTERNAL_EVERYTHING_READY_EVENT`. Names use the `Local\ExternalEverything-runtime-` prefix with process/nonce/sequence suffixes.
 
-```text
-<verified-runtime.exe> --game <game-id>
-```
+Started acknowledges child entry. Ready is emitted after both external renderer surfaces initialize and their first frame succeeds, rather than after window creation alone. It remains separate from game presence, profile admission, entity coverage, and exact presentation semantics. Failure/timeout drops the owned child and attempts stop/reap. `RuntimeSession` retains `OwnedRuntime`; the launcher polls exit and keeps responsibility through shutdown. Bidirectional control IPC remains outside this startup-event contract.
 
-The child owns its external window and game logic. `RuntimeSession` owns the process, exposes `try_wait`, and stops/reaps a still-running child when dropped. The UI polls completion and restores chooser focus. A nonzero child exit or monitoring error is surfaced. Successful spawn establishes process creation only: game-window readiness acknowledgements and bidirectional runtime IPC remain later work. The game argument follows Palepale's `--game` spelling; its binary compatibility checks and event protocol remain separate integration work.
+## Direct memory and process transport
 
-## Vendor boundary
+[Connection](<../crates/hyperrev-transport/src/lib.rs>) implements readiness and explicit bounded virtual-memory reads/writes using the fork's full-width CPUID ABI. Operation `3` copies between source and destination CR3/address pairs; it returns a boolean rather than a byte count. Requests are bounded to 1 MiB and split at both virtual-page boundaries. Failed transfers may have partial effects. Target CR3 stays explicit; the connection's own CR3 is never substituted for it.
 
-The [submodule declaration](<../.gitmodules>) identifies [amangly/hyper-reV](<https://github.com/amangly/hyper-reV>); the parent gitlink pins the actual revision. Shared boot/attachment changes belong in that fork, followed by explicit review and a pin update. The application does not fork a second Setup/Restore implementation.
+[Process discovery](<../crates/hyperrev-transport/src/process.rs>) adapts the reference's metadata approach, rather than its hypercall register layout. [Windows kernel discovery](<../crates/hyperrev-transport/src/windows.rs>) reads the actual kernel's export leaf instructions for process-field offsets, checks running/file PE identity, validates System/current-process identity and reciprocal list links, then validates the selected PID's CR3 and remote MZ/PE. The remaining reference-derived structure hypotheses are verified at runtime. It performs metadata reads, rather than installing hooks or writing kernel fields.
 
-Boot entries remain **hyper-reV** and **Safe Windows**. The recovery journal remains `%LOCALAPPDATA%\hyper-reV\boot-install.json`. The [vendor loader guide](<../vendor/hyper-reV/loader/README.md>) defines prerequisites, repeated setup, journal-based Restore, and stock Windows verification. Vendor debugger and CLI tools remain separate from this app bundle.
+Local copy buffers are prefaulted after range validation: read destinations receive volatile reads/same-byte writes to materialize demand-zero/COW pages; write sources receive volatile reads. This touches pages rather than pinning them, so later paging can still fail a copy. The change addresses the observed bulk-read failure on an initially unmaterialized local page.
 
-## Packaging
+`Connection::self_test` reads/writes/restores newly owned 32-byte and 65-KiB buffers. The runtime's `--self-test` additionally discovers its own PID and reads its own image header. Integration verified these native transport checks, separately from renderer initialization, game offsets, or live ESP alignment.
 
-The [build helper](<../tools/build.ps1>) builds/checks the root workspace and packages prebuilt matching boot payloads. Its default native source is the vendor Release directory; `-PayloadDirectory` selects another matching build. Build stages the following under `dist/`; `-Publish` also copies it to `%LOCALAPPDATA%\External Everything\bin`:
+## PointBlank runtime and current build guard
+
+The [runtime engine](<../crates/external-runtime/src/engine.rs>) selects PointBlank by process name/visible window, resolves its PID through the checked transport, selects an immutable [build profile](<../crates/external-runtime/src/games/pointblank/offsets.rs#L46-L95>) by full disk SHA-256, and requires the profile's exact remote PE32 image size before using its RVAs. Only the two registered profiles are admitted. Process identity is periodically rechecked. Game bytes travel directly through target-CR3 hypercalls; Windows process handles provide path/region metadata only.
+
+The [typed reader](<../crates/external-runtime/src/games/pointblank/README.md>) comes from the supplied local Rust PointBlank source and verified ledger, supplemented by typed frame guards. It validates remote PE32 identity, typed camera/matrix/Avatar pointers, stable collections, and finite geometry. The dynamic manager scan is budgeted; a single observed Avatar stays explicitly distinct from a full collection. Standing-height box dimensions are presentation estimates; bones, teams, visibility, names, and exact box alignment remain unresolved.
+
+Registered profiles retain the legacy `pb_id_20261115` image (`edeeeef3…`, size `0x01f6f000`) and add `pb_id_20261116` (`d7de2e99…`, size `0x01f7c000`, product `127.1.2611.16`). The current profile is backed by [captured RTTI identities](<../build/pointblank-live-prefault-b92e786000b848bbb91947a31c2fc7fe/core-rtti.json>) plus a separate [fresh field-chain proof](<../build/pointblank-live-prefault-b92e786000b848bbb91947a31c2fc7fe/chain-proof-c14a95ee91374233b588c6881b9ac328.json>): stable 2560×1080 camera matrices and one typed Avatar's float health/transform. Offline RTTI candidates alone never admit a profile.
+
+A bounded current-profile scan subsequently resolved the live manager and produced [FullCollection evidence](<../build/pointblank-collection-6e9ed0a515194a21a1002c2589b9f32d.json>): PID `10432`, CR3 `797462528`, manager `310774696`, 12 typed entries, 12 entities, and zero rejected. Float health values include `142` and `132`; projected rectangles are present. `SingleAvatar` remains a separate fallback. Bones, teams, semantic foot anchoring, and exact screen alignment remain unresolved; the 1.8-world-unit box height remains an estimate. The profile-aware APIs preserve legacy defaults and fixtures. See the [runtime guide](<../crates/external-runtime/README.md#verified-profiles-and-remaining-limits>).
+
+## Shared Palepale presentation
+
+The [copied common modules](<../crates/external-runtime/src/common/mod.rs>) identify source pin `6490070271354e2a13a30e107065338c530a7322`. [Overlay](<../crates/external-runtime/src/common/overlay.rs>) retains the Direct2D/DirectWrite drawing API; [Gui](<../crates/external-runtime/src/common/imgui_ui.rs>) retains the D3D11/ImGui renderer; [Chrome](<../crates/external-runtime/src/common/chrome.rs>) and [theme](<../crates/external-runtime/src/common/theme.rs>) retain the shared menu shell/widgets. These are reused implementation files, rather than a new drawing/menu implementation.
+
+[PointBlank presentation](<../crates/external-runtime/src/presentation/native.rs>) supplies an owned 100-ms engine worker, [ESP adapter](<../crates/external-runtime/src/presentation/esp.rs>), [ESP/MISC/CFG tabs](<../crates/external-runtime/src/presentation/menu.rs>), [persistent settings](<../crates/external-runtime/src/presentation/settings.rs>), and `RunReport`. Settings and three slots live beneath `%LOCALAPPDATA%\External Everything\pointblank`. INSERT toggles the menu; END, shared quit, or native window close requests exit. Teardown stops/unparks/joins the engine worker, joins [key polling](<../crates/external-runtime/src/common/keys.rs>), and drops the native HWNDs. Capture-visible constructors are used; capture-affinity/screenshot-monitor paths, injection, licensing, remote update, and spoofing are excluded.
+
+`--render-smoke <1..10 seconds>` uses the same real engine/render loop. It reports successful overlay/menu frames, latest entities/PID, renderer-ready flags, plus `esp_frames` and peak `projected_entities` to distinguish actual live-entity paints from transparent clears. CLI and presentation both enforce a ten-second limit. The shared menu is forced open until both first frames succeed, even while game data is waiting/rejected. The [renderer harness](<../tools/test-renderer.ps1>) exercises owned startup events, the native ImGui HWND, screenshot capture, eight-second rendering, and bounded shutdown. Its native checkpoint passed: 480 overlay frames, 206 menu frames, 139 ESP frames, 14 latest entities, peak three painted projections, and both renderer-ready flags.
+
+## Vendor and packaging
+
+The [submodule](<../.gitmodules>) pins the maintained [hyper-reV fork](<https://github.com/amangly/hyper-reV>). Shared boot/ABI changes belong there; app lifecycle and game logic belong here. Boot entries remain **hyper-reV** and **Safe Windows**, with recovery journal `%LOCALAPPDATA%\hyper-reV\boot-install.json`. The [vendor loader guide](<../vendor/hyper-reV/loader/README.md>) defines backend prerequisites and recovery.
+
+The [build helper](<../tools/build.ps1>) builds the Rust workspace, validates and packages prebuilt matching boot payloads, and writes a generated runtime-hash catalog. Build stages the bundle under `dist/`; `-Publish` also targets `%LOCALAPPDATA%\External Everything\bin`:
 
 ```text
 external-everything.exe
 uefi-boot-standalone.efi
 hyperv-attachment.dll
 games/catalog.json
+games/pointblank/external-runtime.exe
 ```
 
-The helper copies the catalog, rather than deploying future game binaries. Both boot payloads sit beside the application for vendor discovery. Native payload compilation remains a separate vendor build; generated artifacts stay outside Git. The [vendor sync helper](<../tools/sync-vendor.ps1>) explicitly fetches and detaches a candidate revision for review rather than silently tracking a branch.
+The two boot payloads remain executable-relative; native compilation is a separate vendor build. The generated runtime hash identifies the external tool, while the ledger hash identifies the accepted game image. The [vendor sync helper](<../tools/sync-vendor.ps1>) explicitly selects a candidate revision for review. Generated artifacts stay outside Git.
 
-## Reference and deferred scope
-
-The [pinned Palepale flow comparison](<reference-flow.md>) records source provenance and the intentional changes: strict attachment-before-selection, application-owned GPUI windows, retained process ownership, and manual restart. License/authentication, remote asset delivery, automatic self-update, and hardware spoofing are intentionally excluded. The [reserved external-runtime source home](<../crates/external-runtime/README.md>) corresponds to Palepale's `df` crate. Concrete game backends, game-process attachment, memory APIs, and runtime readiness IPC remain later work; the empty catalog reflects that boundary.
-
-Keep app lifecycle/game code here, shared boot/ABI code in the maintained fork, and GPL-3.0-only licensing and upstream attribution intact. Review compatibility and run application checks when accepting a vendor update.
+See [reference provenance](<reference-flow.md>), [runtime details](<../crates/external-runtime/README.md>), and [catalog deployment](<../games/README.md>). The copied renderer now has its own successful native smoke, started/ready/child-cleanup checks, and repeat 65-KiB transport/current-PID checks. The recorded checkpoint passed 164 tests (four separately ignored), Clippy with warnings denied, and Release publication. The final DPI-aware [report](<../build/renderer-verification-8a1e725916ec4e2baa9afa064de8c08c.json>) passed 478 overlay/menu frames with both ready flags, but zero entities/ESP in its waiting state; that is separate from the earlier live 14-entity/139-ESP run. Final native integration/cleanup and loader-caption checks also passed. See [artifact identities](<../crates/external-runtime/README.md#verified-profiles-and-remaining-limits>); exact box alignment and unresolved game semantics remain distinct.

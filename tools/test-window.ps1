@@ -1,6 +1,7 @@
 param(
     [string]$Executable = (Join-Path $env:LOCALAPPDATA 'External Everything\bin\external-everything.exe'),
-    [string]$ExpectedTitle
+    [string]$ExpectedTitle,
+    [string[]]$ExecutableArguments = @()
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
@@ -42,7 +43,9 @@ $oldDpi = [GlassWindowProbe]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
 $previous = [GlassWindowProbe]::GetForegroundWindow()
 $process = $null
 try {
-    $process = Start-Process -FilePath $exe -WorkingDirectory (Get-Location).Path -PassThru
+    $start = @{ FilePath = $exe; WorkingDirectory = (Get-Location).Path; PassThru = $true }
+    if ($ExecutableArguments.Count) { $start.ArgumentList = $ExecutableArguments }
+    $process = Start-Process @start
     if (-not $process.WaitForInputIdle(20000)) { throw 'Glass window input loop failed' }
     $deadline = [datetime]::UtcNow.AddSeconds(8)
     do {

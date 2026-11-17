@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use hyperrev_loader::{app, boot::Firmware, files, platform};
 use hyperrev_transport::Readiness;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -59,21 +59,15 @@ fn require_attachment(readiness: &Readiness) -> Result<()> {
 
 pub struct RuntimeSession {
     pub game_id: String,
-    child: Child,
+    runtime: external_runtime::launch::OwnedRuntime,
 }
 
 impl RuntimeSession {
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
-        self.child.try_wait().context("Check external runtime")
+        self.runtime.try_wait()
     }
-}
-
-impl Drop for RuntimeSession {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
+    pub fn pid(&self) -> u32 {
+        self.runtime.pid()
     }
 }
 
@@ -85,23 +79,14 @@ pub fn launch(game_id: &str) -> Result<RuntimeSession> {
         .find(|game| game.id == game_id)
         .context("Game is absent from the installed catalog")?;
     let executable = catalog::verify_runtime(game)?;
-    let directory = executable
-        .parent()
-        .context("External runtime directory is absent")?;
-    // Recheck after filesystem validation; a cached UI status never grants launch.
+    // A cached UI status never grants launch. The runtime then validates its
+    // contract and acknowledges both process startup and its actual control window.
     require_attachment(&probe::check()?)?;
-    let child = Command::new(&executable)
-        .current_dir(directory)
-        .arg("--game")
-        .arg(&game.id)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+    let runtime = external_runtime::launch::start(&executable, &game.id)
         .with_context(|| format!("Open {} external window", game.name))?;
     Ok(RuntimeSession {
         game_id: game.id.clone(),
-        child,
+        runtime,
     })
 }
 

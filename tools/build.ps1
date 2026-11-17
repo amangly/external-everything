@@ -82,9 +82,21 @@ function Publish-Fresh([string]$Source, [string]$Directory, [string]$Name) {
     if ($hash -ne (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash) { throw 'Published hash differs.' }
     Write-Output "Published $Name SHA256 $hash"
 }
+$runtime = Join-Path $target ($Configuration.ToLowerInvariant() + '\external-runtime.exe')
+if (-not (Test-Path -LiteralPath $runtime -PathType Leaf)) { throw 'Built external runtime is absent.' }
+$catalog = Get-Content -LiteralPath (Join-Path $root 'games\catalog.json') -Raw | ConvertFrom-Json
+if ($catalog.schema -ne 1 -or @($catalog.games | Where-Object { $_.id -eq 'pointblank' }).Count -ne 1) { throw 'PointBlank catalog registration differs.' }
+$catalog.games = @($catalog.games | ForEach-Object {
+    if ($_.id -eq 'pointblank') { [ordered]@{ id = 'pointblank'; name = 'PointBlank'; executable = 'pointblank/external-runtime.exe'; sha256 = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant() } } else { $_ }
+})
+$catalogBytes = [Text.UTF8Encoding]::new($false).GetBytes(($catalog | ConvertTo-Json -Depth 8) + "`n")
+$catalogSource = Join-Path $root ('build\catalog-' + [guid]::NewGuid().ToString('N') + '.json')
+$catalogOutput = [IO.File]::Open($catalogSource, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try { $catalogOutput.Write($catalogBytes, 0, $catalogBytes.Length); $catalogOutput.Flush($true) } finally { $catalogOutput.Dispose() }
 $destinations = @((Join-Path $root 'dist'))
 if ($Publish) { $destinations += Join-Path $env:LOCALAPPDATA 'External Everything\bin' }
 foreach ($directory in $destinations) {
     foreach ($name in $sources.Keys) { Publish-Fresh $sources[$name] $directory $name }
-    Publish-Fresh (Join-Path $root 'games\catalog.json') (Join-Path $directory 'games') 'catalog.json'
+    Publish-Fresh $runtime (Join-Path $directory 'games\pointblank') 'external-runtime.exe'
+    Publish-Fresh $catalogSource (Join-Path $directory 'games') 'catalog.json'
 }
