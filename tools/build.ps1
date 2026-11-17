@@ -86,4 +86,5 @@ $destinations = @((Join-Path $root 'dist'))
 if ($Publish) { $destinations += Join-Path $env:LOCALAPPDATA 'External Everything\bin' }
 foreach ($directory in $destinations) {
     foreach ($name in $sources.Keys) { Publish-Fresh $sources[$name] $directory $name }
+    Publish-Fresh (Join-Path $root 'games\catalog.json') (Join-Path $directory 'games') 'catalog.json'
 }

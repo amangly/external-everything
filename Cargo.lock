@@ -1369,7 +1369,12 @@ name = "external-everything"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gpui",
  "hyperrev-loader",
+ "hyperrev-transport",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "windows-sys 0.61.2",
 ]
 
@@ -2212,6 +2217,13 @@ dependencies = [
  "sha2 0.10.9",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hyperrev-transport"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]

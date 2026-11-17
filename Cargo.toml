@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop"]
+members = ["apps/desktop", "crates/hyperrev-transport"]
 exclude = ["vendor/hyper-reV/loader"]
 resolver = "3"
 
@@ -13,7 +13,12 @@ publish = false
 [workspace.dependencies]
 anyhow = "1.0.104"
 hyperrev-loader = { path = "vendor/hyper-reV/loader" }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+hyperrev-transport = { path = "crates/hyperrev-transport" }
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
 
 [profile.release]
 strip = "debuginfo"

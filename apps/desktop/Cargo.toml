@@ -10,6 +10,11 @@ description = "External Everything native desktop application"
 [dependencies]
 anyhow.workspace = true
 hyperrev-loader.workspace = true
+hyperrev-transport.workspace = true
+gpui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

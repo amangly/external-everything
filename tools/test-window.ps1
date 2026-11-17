@@ -1,4 +1,7 @@
-param([string]$Executable = (Join-Path $env:LOCALAPPDATA 'External Everything\bin\external-everything.exe'))
+param(
+    [string]$Executable = (Join-Path $env:LOCALAPPDATA 'External Everything\bin\external-everything.exe'),
+    [string]$ExpectedTitle
+)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -41,9 +44,16 @@ $process = $null
 try {
     $process = Start-Process -FilePath $exe -WorkingDirectory (Get-Location).Path -PassThru
     if (-not $process.WaitForInputIdle(20000)) { throw 'Glass window input loop failed' }
-    $process.Refresh()
-    $window = $process.MainWindowHandle
-    if ($window -eq [IntPtr]::Zero -or -not [GlassWindowProbe]::IsWindow($window)) { throw 'Glass window handle is absent' }
+    $deadline = [datetime]::UtcNow.AddSeconds(8)
+    do {
+        $process.Refresh()
+        $window = $process.MainWindowHandle
+        $matchesTitle = -not $ExpectedTitle -or $process.MainWindowTitle -eq $ExpectedTitle
+        if ($window -ne [IntPtr]::Zero -and [GlassWindowProbe]::IsWindow($window) -and $matchesTitle) { break }
+        if ($process.HasExited) { throw 'Launcher exited before the expected screen opened' }
+        [Threading.Thread]::Sleep(20)
+    } while ([datetime]::UtcNow -lt $deadline)
+    if ($window -eq [IntPtr]::Zero -or -not [GlassWindowProbe]::IsWindow($window) -or -not $matchesTitle) { throw 'Expected launcher window is absent' }
     Write-Output "Window PID $($process.Id), title: $($process.MainWindowTitle)"
     [GlassWindowProbe]::SetForegroundWindow($window) | Out-Null
     if (-not [GlassWindowProbe]::SetWindowPos($window,[IntPtr]::new(-1),0,0,0,0,0x0053)) { throw 'Owned preview elevation failed' }
